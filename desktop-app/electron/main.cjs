@@ -4,10 +4,13 @@ const { spawn } = require('child_process')
 
 let mainWindow
 
+const SUPPORTED_PLATFORMS = ['instagram', 'tiktok', 'twitter', 'kwai']
+const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'])
+
 function createWindow() {
     mainWindow = new BrowserWindow({
-        width: 900,
-        height: 700,
+        width: 1000,
+        height: 760,
         backgroundColor: '#0f172a',
         webPreferences: {
             preload: path.join(__dirname, 'preload.cjs'),
@@ -17,13 +20,231 @@ function createWindow() {
         autoHideMenuBar: true
     })
 
-    // In Dev mode, load from Vite dev server
     const isDev = process.env.NODE_ENV === 'development'
     if (isDev) {
         mainWindow.loadURL('http://localhost:5173')
-        // mainWindow.webContents.openDevTools()
     } else {
         mainWindow.loadFile(path.join(__dirname, '../dist/index.html'))
+    }
+}
+
+function normalizeUrl(rawUrl) {
+    let normalized = String(rawUrl || '').trim()
+    normalized = normalized.replace(/[)\],.;!?]+$/g, '')
+    return normalized
+}
+
+function detectPlatform(urlString) {
+    try {
+        const parsed = new URL(urlString)
+        const hostname = parsed.hostname.toLowerCase()
+        if (hostname.includes('instagram.com')) return 'instagram'
+        if (hostname.includes('tiktok.com')) return 'tiktok'
+        if (hostname === 'x.com' || hostname.endsWith('.x.com') || hostname.includes('twitter.com')) return 'twitter'
+        if (hostname.includes('kwai-video.com') || hostname.includes('kwai.com')) return 'kwai'
+        return 'unknown'
+    } catch {
+        return 'unknown'
+    }
+}
+
+function extractLinks(inputText) {
+    const rawUrls = String(inputText || '').match(/https?:\/\/[^\s<>"'\\]+/g) || []
+    const deduped = new Map()
+    for (const rawUrl of rawUrls) {
+        const normalized = normalizeUrl(rawUrl)
+        if (!deduped.has(normalized)) {
+            deduped.set(normalized, { url: normalized, platform: detectPlatform(normalized) })
+        }
+    }
+
+    const allLinks = Array.from(deduped.values())
+    const supported = allLinks.filter((item) => SUPPORTED_PLATFORMS.includes(item.platform))
+    const unsupported = allLinks.filter((item) => item.platform === 'unknown')
+
+    return {
+        links: supported,
+        unsupportedLinks: unsupported.map((item) => item.url),
+        totals: {
+            extracted: rawUrls.length,
+            unique: allLinks.length,
+            supported: supported.length,
+            unsupported: unsupported.length
+        }
+    }
+}
+
+function runCommand(command, args) {
+    return new Promise((resolve) => {
+        const proc = spawn(command, args)
+        let stdout = ''
+        let stderr = ''
+
+        proc.stdout.on('data', (data) => {
+            stdout += data.toString()
+        })
+
+        proc.stderr.on('data', (data) => {
+            stderr += data.toString()
+        })
+
+        proc.on('close', (code) => {
+            resolve({
+                ok: code === 0,
+                code,
+                stdout: stdout.trim(),
+                stderr: stderr.trim()
+            })
+        })
+
+        proc.on('error', (error) => {
+            resolve({
+                ok: false,
+                code: -1,
+                stdout: '',
+                stderr: error.message
+            })
+        })
+    })
+}
+
+function classifySingleInfo(info) {
+    if (!info || typeof info !== 'object') return 'unknown'
+
+    if (Array.isArray(info.entries) && info.entries.length > 0) {
+        const entryTypes = info.entries.map(classifySingleInfo).filter((type) => type !== 'unknown')
+        if (entryTypes.length === 0) return 'unknown'
+        if (entryTypes.every((type) => type === entryTypes[0])) return entryTypes[0]
+        return 'mixed'
+    }
+
+    if (typeof info.vcodec === 'string' && info.vcodec !== 'none') {
+        return 'video'
+    }
+
+    if (typeof info.duration === 'number' && info.duration > 0) {
+        return 'video'
+    }
+
+    if (typeof info.ext === 'string' && IMAGE_EXTENSIONS.has(info.ext.toLowerCase())) {
+        return 'image'
+    }
+
+    if (
+        typeof info.width === 'number' &&
+        typeof info.height === 'number' &&
+        (!info.vcodec || info.vcodec === 'none') &&
+        !info.duration
+    ) {
+        return 'image'
+    }
+
+    return 'unknown'
+}
+
+function fallbackMediaType(url, platform) {
+    const lowerUrl = url.toLowerCase()
+    if (platform === 'kwai') return 'video'
+    if (platform === 'tiktok') return lowerUrl.includes('/photo/') ? 'image' : 'video'
+    if (platform === 'instagram') {
+        if (lowerUrl.includes('/reel/') || lowerUrl.includes('/tv/')) return 'video'
+        if (lowerUrl.includes('/stories/')) return 'unknown'
+        return 'unknown'
+    }
+    if (platform === 'twitter') return 'unknown'
+    return 'unknown'
+}
+
+async function probeMedia(url, browser) {
+    const args = ['--skip-download', '--dump-single-json', '--no-warnings']
+    if (browser) {
+        args.push('--cookies-from-browser', browser)
+    }
+    args.push(url)
+
+    const probe = await runCommand('yt-dlp', args)
+    if (!probe.ok || !probe.stdout) {
+        const platform = detectPlatform(url)
+        return {
+            url,
+            platform,
+            mediaType: fallbackMediaType(url, platform),
+            source: 'fallback',
+            ok: false,
+            error: probe.stderr || 'yt-dlp probe failed'
+        }
+    }
+
+    try {
+        const info = JSON.parse(probe.stdout)
+        const mediaType = classifySingleInfo(info)
+        return {
+            url,
+            platform: detectPlatform(url),
+            mediaType,
+            source: 'yt-dlp',
+            ok: true
+        }
+    } catch {
+        const platform = detectPlatform(url)
+        return {
+            url,
+            platform,
+            mediaType: fallbackMediaType(url, platform),
+            source: 'fallback',
+            ok: false,
+            error: 'Unable to parse metadata JSON'
+        }
+    }
+}
+
+async function downloadMedia({ url, browser, saveMode }) {
+    const outputDir = path.join(app.getPath('downloads'), 'InstaBatch')
+    const platform = detectPlatform(url)
+
+    if (platform === 'kwai') {
+        const args = ['--no-warnings', '--no-progress']
+        if (browser) {
+            args.push('--cookies-from-browser', browser)
+        }
+        args.push('-P', outputDir)
+
+        if (saveMode === 'perfil') {
+            args.push(
+                '-o',
+                '%(uploader|channel|creator|id)s/%(title).100B [%(id)s].%(ext)s'
+            )
+        } else {
+            args.push(
+                '-o',
+                '%(title).100B [%(id)s].%(ext)s'
+            )
+        }
+
+        args.push(url)
+        const result = await runCommand('yt-dlp', args)
+        return {
+            success: result.ok,
+            url,
+            platform,
+            tool: 'yt-dlp',
+            error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
+        }
+    }
+
+    const args = []
+    if (browser) {
+        args.push('--cookies-from-browser', browser)
+    }
+    args.push('-d', outputDir, url)
+
+    const result = await runCommand('gallery-dl', args)
+    return {
+        success: result.ok,
+        url,
+        platform,
+        tool: 'gallery-dl',
+        error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
     }
 }
 
@@ -39,38 +260,32 @@ app.on('window-all-closed', function () {
     if (process.platform !== 'darwin') app.quit()
 })
 
-// IPC Handler to start real download
-ipcMain.handle('start-download', async (event, url, browser) => {
-    return new Promise((resolve) => {
-        // We use the pipx-installed globally available gallery-dl
-        // In a final production app, we would bundle the gallery-dl binary
-        const outputDir = path.join(app.getPath('downloads'), 'InstaBatch')
+ipcMain.handle('parse-links', async (_event, inputText) => {
+    return extractLinks(inputText)
+})
 
-        // Command: gallery-dl --cookies-from-browser <browser> -d <dir> <url>
-        const dlProcess = spawn('gallery-dl', [
-            '--cookies-from-browser', browser,
-            '-d', outputDir,
-            url
-        ])
+ipcMain.handle('audit-links', async (_event, links, browser) => {
+    const targets = Array.isArray(links) ? links : []
+    const results = []
+    for (const link of targets) {
+        results.push(await probeMedia(link, browser))
+    }
+    return { results }
+})
 
-        dlProcess.stdout.on('data', (data) => {
-            console.log(`stdout: ${data}`)
+ipcMain.handle('start-download', async (_event, payloadOrUrl, legacyBrowser) => {
+    if (typeof payloadOrUrl === 'string') {
+        return downloadMedia({
+            url: payloadOrUrl,
+            browser: legacyBrowser || '',
+            saveMode: 'perfil'
         })
+    }
 
-        dlProcess.stderr.on('data', (data) => {
-            console.error(`stderr: ${data}`)
-        })
-
-        dlProcess.on('close', (code) => {
-            if (code === 0) {
-                resolve({ success: true, url })
-            } else {
-                resolve({ success: false, url, error: `Process exited with code ${code}` })
-            }
-        })
-
-        dlProcess.on('error', (err) => {
-            resolve({ success: false, url, error: err.message })
-        })
+    const payload = payloadOrUrl || {}
+    return downloadMedia({
+        url: payload.url || '',
+        browser: payload.browser || '',
+        saveMode: payload.saveMode || 'perfil'
     })
 })
