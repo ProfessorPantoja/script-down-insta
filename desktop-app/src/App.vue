@@ -35,6 +35,10 @@ const auditing = ref(false)
 const currentStep = ref(1)
 const analyzeInputStatus = ref('')
 
+const pasteMenuOpen = ref(false)
+const pasteMenuPos = ref({ x: 0, y: 0 })
+const pasteTarget = ref<HTMLTextAreaElement | null>(null)
+
 const links = ref<LinkItem[]>([])
 const unsupportedLinks = ref<string[]>([])
 const linkTotals = ref<TotalsState>({
@@ -65,6 +69,54 @@ let downloadIndexByUrl = new Map<string, number>()
 const allPlatforms: Platform[] = ['instagram', 'tiktok', 'twitter', 'kwai']
 
 const isElectron = () => Boolean((window as any).electronAPI)
+
+const openPasteMenu = (event: MouseEvent) => {
+  const target = event.target as HTMLElement | null
+  if (!target) return
+  if (!(target instanceof HTMLTextAreaElement)) return
+
+  pasteTarget.value = target
+  pasteMenuPos.value = { x: event.clientX, y: event.clientY }
+  pasteMenuOpen.value = true
+}
+
+const closePasteMenu = () => {
+  pasteMenuOpen.value = false
+  pasteTarget.value = null
+}
+
+const onDocClick = () => closePasteMenu()
+const onKeyDown = (event: KeyboardEvent) => {
+  if (event.key === 'Escape') closePasteMenu()
+}
+
+const readClipboardText = async () => {
+  if (isElectron() && (window as any).electronAPI?.readClipboardText) {
+    try {
+      return String((window as any).electronAPI.readClipboardText() || '')
+    } catch {
+      // fallback abaixo
+    }
+  }
+
+  try {
+    return await navigator.clipboard.readText()
+  } catch {
+    return ''
+  }
+}
+
+const pasteFromContextMenu = async () => {
+  const target = pasteTarget.value
+  closePasteMenu()
+  if (!target) return
+
+  const text = await readClipboardText()
+  if (!text) return
+
+  inputText.value = text
+  target.focus()
+}
 
 const normalizeUrl = (rawUrl: string) => {
   const cleaned = rawUrl.trim().replace(/[)\],.;!?]+$/g, '')
@@ -634,6 +686,16 @@ onBeforeUnmount(() => {
   unsubscribeBatchProgress = null
   unsubscribeBatchDone = null
 })
+
+onMounted(() => {
+  document.addEventListener('click', onDocClick)
+  document.addEventListener('keydown', onKeyDown)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', onDocClick)
+  document.removeEventListener('keydown', onKeyDown)
+})
 </script>
 
 <template>
@@ -649,12 +711,29 @@ onBeforeUnmount(() => {
       <transition name="fade" mode="out-in">
         <div v-if="currentStep === 1" key="step1" class="space-y-4">
           <label class="block text-sm font-medium text-slate-300">Pode colar texto misturado com links. Eu filtro os links automaticamente (Instagram, TikTok, X/Twitter e Kwai).</label>
-          <textarea
-            v-model="inputText"
-            rows="8"
-            class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 placeholder-slate-600 focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all"
-            placeholder="Exemplo:&#10;https://www.instagram.com/p/...&#10;https://www.tiktok.com/@user/video/...&#10;https://x.com/user/status/...&#10;https://kwai-video.com/p/..."
-          ></textarea>
+          <div class="relative">
+            <textarea
+              v-model="inputText"
+              rows="8"
+              class="w-full bg-slate-900 border border-slate-700 rounded-xl p-4 text-slate-300 placeholder-slate-600 focus:ring-2 focus:ring-pink-500 focus:border-transparent transition-all"
+              placeholder="Exemplo:&#10;https://www.instagram.com/p/...&#10;https://www.tiktok.com/@user/video/...&#10;https://x.com/user/status/...&#10;https://kwai-video.com/p/..."
+              @contextmenu.prevent="openPasteMenu"
+            ></textarea>
+
+            <div
+              v-if="pasteMenuOpen"
+              class="fixed z-50 w-44 rounded-lg border border-slate-700 bg-slate-950 shadow-xl text-sm overflow-hidden"
+              :style="{ left: pasteMenuPos.x + 'px', top: pasteMenuPos.y + 'px' }"
+              @click.stop
+            >
+              <button
+                class="w-full text-left px-3 py-2 hover:bg-slate-800 text-slate-200"
+                @click="pasteFromContextMenu"
+              >
+                Colar
+              </button>
+            </div>
+          </div>
 
           <button
             @click="analyzeLinks"
