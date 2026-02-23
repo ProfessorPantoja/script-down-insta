@@ -12,9 +12,13 @@
 
 ---
 
-## 🎯 2. Público-Alvo e Monetização
-- **Público:** Social Medias, Gestores de Tráfego (baixar anúncios concorrentes), Editores de Vídeo (baixar materiais brutos), Produtores de Conteúdo.
-- **Modelo de Negócio Sugerido:** Licença anual "lifetime" de baixo custo (ex: R$ 97 a R$ 147/ano) para justificar a manutenção das atualizações do extrator (visto que o Instagram muda o código do site frequentemente).
+## 🎯 2. Público-Alvo e Monetização Global
+- **Público:** Social Medias, Gestores de Tráfego, Editores de Vídeo e Agências **do mundo todo**.
+- **Idiomas Nativos do App:** Português, Inglês, Espanhol, Mandarim (Chinês) e Hindi (Indiano).
+- **Modelo de Negócio (SaaS Desktop):** Focado em recebimento em **Dólar (USD)**:
+  - **Mensal:** $9.90 / mês.
+  - **Anual:** $7.00 / mês (cobrado $84/ano - incentivo ao fluxo de caixa).
+- **Estratégia de Vendas (SEO):** Criação de um pólo de Landing Pages rápidas geradas por IA. Uma página otimizada para cada dor específica em 5 idiomas diferentes para capturar tráfego orgânico global.
 
 ---
 
