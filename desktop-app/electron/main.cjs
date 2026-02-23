@@ -3,6 +3,24 @@ const path = require('path')
 const { spawn } = require('child_process')
 const fs = require('fs/promises')
 
+if (process.env.ELECTRON_RUN_AS_NODE) {
+    console.error(
+        'electron/main.cjs não pode rodar com ELECTRON_RUN_AS_NODE habilitado.\n' +
+        'Remova essa variável do ambiente e execute via Electron.'
+    )
+    process.exit(1)
+}
+
+if (!process.versions || !process.versions.electron) {
+    console.error(
+        'electron/main.cjs precisa ser executado dentro do Electron.\n' +
+        'Dica: verifique se a variável de ambiente ELECTRON_RUN_AS_NODE está setada.'
+    )
+    process.exit(1)
+}
+
+app.disableHardwareAcceleration()
+
 let mainWindow
 
 const SUPPORTED_PLATFORMS = ['instagram', 'tiktok', 'twitter', 'kwai']
