@@ -29,6 +29,8 @@ interface TotalsState {
 const inputText = ref('')
 const selectedBrowser = ref<'chrome' | 'edge' | 'firefox'>('chrome')
 const saveMode = ref<'perfil' | 'misturado'>('perfil')
+const openFolderOnFinish = ref(true)
+const downloadFolderPath = ref('')
 
 const analyzing = ref(false)
 const auditing = ref(false)
@@ -69,6 +71,16 @@ let downloadIndexByUrl = new Map<string, number>()
 const allPlatforms: Platform[] = ['instagram', 'tiktok', 'twitter', 'kwai']
 
 const isElectron = () => Boolean((window as any).electronAPI)
+
+const canOpenDownloadFolder = computed(() => {
+  if (!isElectron()) return false
+  return Boolean((window as any).electronAPI?.openDownloadFolder)
+})
+
+const openDownloadFolder = () => {
+  if (!canOpenDownloadFolder.value) return
+  ;(window as any).electronAPI.openDownloadFolder()
+}
 
 const openPasteMenu = (event: MouseEvent) => {
   const target = event.target as HTMLElement | null
@@ -453,6 +465,11 @@ const startDownload = async () => {
 
   downloadActionStatus.value = 'Iniciando...'
   cancellingDownload.value = false
+  if (isElectron()) {
+    downloadActionStatus.value = downloadFolderPath.value
+      ? `Salvando em: ${downloadFolderPath.value}`
+      : 'Iniciando...'
+  }
 
   isDownloading.value = true
   downloadProgress.value = 0
@@ -686,7 +703,17 @@ const handleBatchDone = (payload: any) => {
   isDownloading.value = false
   cancellingDownload.value = false
   if (downloadProgress.value < 100) downloadProgress.value = 100
-  if (payload?.cancelled) downloadActionStatus.value = 'Download cancelado.'
+  const outputDir = String(payload?.outputDir || downloadFolderPath.value || '')
+  if (outputDir) downloadFolderPath.value = outputDir
+  if (payload?.cancelled) {
+    downloadActionStatus.value = 'Download cancelado.'
+    return
+  }
+  downloadActionStatus.value = outputDir ? `Finalizado. Salvou em: ${outputDir}` : 'Finalizado.'
+
+  if (openFolderOnFinish.value && isElectron() && (window as any).electronAPI?.openDownloadFolder) {
+    ;(window as any).electronAPI.openDownloadFolder()
+  }
 }
 
 onMounted(() => {
@@ -696,6 +723,15 @@ onMounted(() => {
 
   unsubscribeBatchProgress = api.onDownloadBatchProgress(handleBatchProgress)
   unsubscribeBatchDone = api.onDownloadBatchDone(handleBatchDone)
+
+  if (api?.getDownloadFolder) {
+    api
+      .getDownloadFolder()
+      .then((result: any) => {
+        if (result?.ok && result?.path) downloadFolderPath.value = String(result.path)
+      })
+      .catch(() => {})
+  }
 })
 
 onBeforeUnmount(() => {
@@ -949,6 +985,27 @@ onBeforeUnmount(() => {
                 <option value="misturado">Tudo na mesma pasta</option>
               </select>
             </div>
+          </div>
+
+          <div v-if="!isDownloading && downloadProgress === 0" class="bg-slate-900/40 p-4 rounded-xl border border-slate-800 space-y-3">
+            <div class="flex items-center justify-between gap-3">
+              <div class="text-xs uppercase tracking-wider text-slate-400">Destino</div>
+              <button
+                v-if="canOpenDownloadFolder"
+                @click="openDownloadFolder"
+                class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
+              >
+                Abrir pasta
+              </button>
+            </div>
+            <div class="text-xs text-slate-300 break-all">
+              <span class="text-slate-400">Salvando em:</span>
+              <span class="ml-1">{{ downloadFolderPath || '(pasta de Downloads do sistema)/InstaBatch' }}</span>
+            </div>
+            <label v-if="isElectron()" class="flex items-center gap-2 text-sm text-slate-300">
+              <input v-model="openFolderOnFinish" type="checkbox" class="accent-pink-500" />
+              <span>Abrir pasta ao concluir</span>
+            </label>
           </div>
 
           <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">

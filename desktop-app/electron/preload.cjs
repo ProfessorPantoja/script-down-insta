@@ -9,6 +9,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     toolsStatus: () => ipcRenderer.invoke('tools-status'),
     startDownloadBatch: (payload) => ipcRenderer.invoke('download-batch-start', payload),
     cancelDownloadBatch: (batchId) => ipcRenderer.invoke('download-batch-cancel', batchId),
+    getDownloadFolder: () => ipcRenderer.invoke('get-download-folder'),
+    openDownloadFolder: () => ipcRenderer.invoke('open-download-folder'),
     onDownloadBatchProgress: (callback) => {
         const listener = (_event, payload) => callback(payload)
         ipcRenderer.on('download-batch-progress', listener)

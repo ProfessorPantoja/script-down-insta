@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const fs = require('fs/promises')
@@ -23,6 +23,7 @@ if (!process.versions || !process.versions.electron) {
 app.disableHardwareAcceleration()
 
 let mainWindow
+const DOWNLOAD_DIR = path.join(app.getPath('downloads'), 'InstaBatch')
 
 const toolCache = {
     galleryDl: null,
@@ -346,7 +347,7 @@ async function probeMedia(url, browser, options = {}) {
 }
 
 async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
-    const outputDir = path.join(app.getPath('downloads'), 'InstaBatch')
+    const outputDir = DOWNLOAD_DIR
     const normalizedUrl = normalizeUrl(url)
     const platform = detectPlatform(normalizedUrl)
     const perItemTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 180000
@@ -455,9 +456,9 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
     if (batch.total === 0) {
         activeBatches.delete(batchId)
         if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('download-batch-done', { batchId, cancelled: false })
+            mainWindow.webContents.send('download-batch-done', { batchId, cancelled: false, outputDir: DOWNLOAD_DIR })
         }
-        return { ok: true, batchId, total: 0 }
+        return { ok: true, batchId, total: 0, outputDir: DOWNLOAD_DIR }
     }
 
     const sendProgress = (payload) => {
@@ -565,7 +566,7 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
                 running -= 1
                 if (batch.completed >= batch.total) {
                     activeBatches.delete(batchId)
-                    sendDone({ batchId, cancelled: batch.cancelled })
+                    sendDone({ batchId, cancelled: batch.cancelled, outputDir: DOWNLOAD_DIR })
                     return
                 }
                 await pump()
@@ -574,7 +575,7 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
     }
 
     await pump()
-    return { ok: true, batchId, total: batch.total }
+    return { ok: true, batchId, total: batch.total, outputDir: DOWNLOAD_DIR }
 }
 
 function cancelDownloadBatch(batchId) {
@@ -611,7 +612,7 @@ function cancelDownloadBatch(batchId) {
     if (batch.completed >= batch.total) {
         activeBatches.delete(batchId)
         if (typeof batch.sendDone === 'function') {
-            batch.sendDone({ batchId: batch.id, cancelled: true })
+            batch.sendDone({ batchId: batch.id, cancelled: true, outputDir: DOWNLOAD_DIR })
         }
     }
     return { ok: true }
@@ -761,4 +762,21 @@ ipcMain.handle('download-batch-start', async (_event, payload) => {
 
 ipcMain.handle('download-batch-cancel', async (_event, batchId) => {
     return cancelDownloadBatch(String(batchId || ''))
+})
+
+ipcMain.handle('open-download-folder', async () => {
+    try {
+        await fs.mkdir(DOWNLOAD_DIR, { recursive: true })
+        const result = await shell.openPath(DOWNLOAD_DIR)
+        if (result) {
+            return { ok: false, error: result, path: DOWNLOAD_DIR }
+        }
+        return { ok: true, path: DOWNLOAD_DIR }
+    } catch (error) {
+        return { ok: false, error: error?.message || String(error), path: DOWNLOAD_DIR }
+    }
+})
+
+ipcMain.handle('get-download-folder', async () => {
+    return { ok: true, path: DOWNLOAD_DIR }
 })
