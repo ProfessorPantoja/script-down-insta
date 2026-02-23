@@ -33,6 +33,7 @@ const saveMode = ref<'perfil' | 'misturado'>('perfil')
 const analyzing = ref(false)
 const auditing = ref(false)
 const currentStep = ref(1)
+const analyzeInputStatus = ref('')
 
 const links = ref<LinkItem[]>([])
 const unsupportedLinks = ref<string[]>([])
@@ -349,6 +350,7 @@ const auditAllLinks = async () => {
 
 const analyzeLinks = async () => {
   analyzing.value = true
+  analyzeInputStatus.value = ''
   try {
     let result
     if (isElectron() && (window as any).electronAPI.parseLinks) {
@@ -369,6 +371,14 @@ const analyzeLinks = async () => {
       unique: 0,
       supported: 0,
       unsupported: 0
+    }
+
+    if (links.value.length === 0) {
+      if ((linkTotals.value.extracted || 0) === 0) {
+        analyzeInputStatus.value = 'Nenhum link encontrado no texto. Cole links misturados com texto que eu filtro automaticamente.'
+      } else {
+        analyzeInputStatus.value = `Encontrei ${linkTotals.value.extracted} link(s), mas nenhum é suportado por enquanto.`
+      }
     }
 
     currentStep.value = links.value.length > 0 ? 2 : 1
@@ -426,6 +436,7 @@ const startDownload = async () => {
 
 const reset = () => {
   inputText.value = ''
+  analyzeInputStatus.value = ''
   links.value = []
   unsupportedLinks.value = []
   linkTotals.value = {
@@ -455,7 +466,7 @@ const reset = () => {
     <main class="w-full max-w-4xl bg-app-surface/50 backdrop-blur-xl border border-slate-700/50 rounded-2xl p-6 shadow-2xl">
       <transition name="fade" mode="out-in">
         <div v-if="currentStep === 1" key="step1" class="space-y-4">
-          <label class="block text-sm font-medium text-slate-300">Cole mensagens ou links (Instagram, TikTok, X/Twitter, Kwai):</label>
+          <label class="block text-sm font-medium text-slate-300">Pode colar texto misturado com links. Eu filtro os links automaticamente (Instagram, TikTok, X/Twitter e Kwai).</label>
           <textarea
             v-model="inputText"
             rows="8"
@@ -471,6 +482,9 @@ const reset = () => {
             <span v-if="analyzing" class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></span>
             {{ analyzing ? 'Analisando links...' : '🔍 Extrair e Auditar' }}
           </button>
+          <div v-if="analyzeInputStatus" class="text-sm rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+            {{ analyzeInputStatus }}
+          </div>
         </div>
 
         <div v-else key="step2" class="space-y-6">
