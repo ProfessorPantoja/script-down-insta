@@ -364,7 +364,7 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         }
 
         const targetDir = saveMode === 'misturado' ? path.join(outputDir, 'misturado') : outputDir
-        const args = ['--no-warnings', '--no-progress', '--output-na-placeholder', 'na']
+        const args = ['--no-warnings', '--no-progress', '--no-input', '--output-na-placeholder', 'na']
         if (browser) {
             args.push('--cookies-from-browser', browser)
         }
@@ -408,6 +408,7 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
     if (browser) {
         args.push('--cookies-from-browser', browser)
     }
+    args.push('--no-input')
     if (saveMode === 'misturado') {
         args.push('-D', path.join(outputDir, 'misturado'), normalizedUrl)
     } else {
@@ -526,6 +527,17 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
             const nextUrl = batch.queue.shift()
             if (!nextUrl) continue
             running += 1
+            const startedUrl = normalizeUrl(nextUrl)
+            sendProgress({
+                batchId,
+                completed: batch.completed,
+                total: batch.total,
+                item: {
+                    phase: 'started',
+                    url: startedUrl,
+                    platform: detectPlatform(startedUrl)
+                }
+            })
 
             ; (async () => {
                 let itemResult

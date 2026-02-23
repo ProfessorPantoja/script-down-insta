@@ -15,7 +15,7 @@ interface DownloadStatus {
   url: string
   platform: Platform
   mediaType: MediaType
-  status: 'pending' | 'success' | 'error'
+  status: 'pending' | 'running' | 'success' | 'error'
   error?: string
 }
 
@@ -455,7 +455,7 @@ const startDownload = async () => {
   const targets = selectedLinks.value
   if (targets.length === 0) return
 
-  downloadActionStatus.value = ''
+  downloadActionStatus.value = 'Iniciando...'
   cancellingDownload.value = false
 
   isDownloading.value = true
@@ -528,6 +528,7 @@ const startDownload = async () => {
 
     if (isElectron() && (window as any).electronAPI.startDownload) {
       try {
+        statusEntry.status = 'running'
         const result = await (window as any).electronAPI.startDownload({
           url: item.url,
           browser: selectedBrowser.value,
@@ -542,6 +543,7 @@ const startDownload = async () => {
         statusEntry.error = String(error)
       }
     } else {
+      statusEntry.status = 'running'
       await new Promise((resolve) => setTimeout(resolve, 450))
       statusEntry.status = Math.random() > 0.2 ? 'success' : 'error'
     }
@@ -658,6 +660,18 @@ const handleBatchProgress = (payload: any) => {
   }
 
   const item = payload?.item || {}
+  if (item?.phase === 'started') {
+    const url = normalizeUrl(String(item.url || ''))
+    const index = downloadIndexByUrl.get(url)
+    if (index === undefined) return
+    const entry = downloadStatuses.value[index]
+    if (!entry) return
+    entry.status = 'running'
+    entry.error = undefined
+    if (downloadActionStatus.value) downloadActionStatus.value = ''
+    return
+  }
+
   const url = normalizeUrl(String(item.url || ''))
   const index = downloadIndexByUrl.get(url)
   if (index === undefined) return
@@ -667,6 +681,7 @@ const handleBatchProgress = (payload: any) => {
 
   entry.status = item.success ? 'success' : 'error'
   entry.error = item.success ? undefined : String(item.error || 'Falha no download')
+  if (downloadActionStatus.value) downloadActionStatus.value = ''
 }
 
 const handleBatchDone = (payload: any) => {
@@ -983,6 +998,7 @@ onBeforeUnmount(() => {
               <div v-for="(log, idx) in downloadStatuses" :key="idx" class="space-y-1 border-b border-slate-900 pb-2">
                 <div class="flex items-center gap-2 truncate">
                   <span v-if="log.status === 'pending'" class="text-slate-500">⏳ [Aguardando]</span>
+                  <span v-else-if="log.status === 'running'" class="text-cyan-300">⬇️ [Baixando]</span>
                   <span v-else-if="log.status === 'success'" class="text-green-500">✅ [Sucesso]</span>
                   <span v-else class="text-red-500">❌ [Erro]</span>
                   <span class="text-cyan-400">[{{ platformLabel(log.platform) }}]</span>
