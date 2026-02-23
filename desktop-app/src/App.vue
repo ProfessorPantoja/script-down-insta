@@ -442,10 +442,6 @@ const analyzeLinks = async () => {
     }
 
     currentStep.value = links.value.length > 0 ? 2 : 1
-
-    if (links.value.length > 0) {
-      await auditAllLinks()
-    }
   } finally {
     analyzing.value = false
   }
@@ -763,7 +759,7 @@ onBeforeUnmount(() => {
             class="w-full py-4 rounded-xl font-bold text-lg bg-gradient-to-r from-pink-600 to-orange-500 hover:from-pink-500 hover:to-orange-400 text-white shadow-lg shadow-pink-500/25 transition-all transform hover:scale-[1.01] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed flex justify-center items-center gap-2"
           >
             <span v-if="analyzing" class="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></span>
-            {{ analyzing ? 'Analisando links...' : '🔍 Extrair e Auditar' }}
+            {{ analyzing ? 'Analisando links...' : '🔍 Extrair links' }}
           </button>
           <div v-if="analyzeInputStatus" class="text-sm rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
             {{ analyzeInputStatus }}
@@ -825,8 +821,9 @@ onBeforeUnmount(() => {
                 @click="auditAllLinks"
                 :disabled="auditing || isDownloading"
                 class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+                title="Opcional: usa yt-dlp para identificar o tipo de mídia e pode demorar."
               >
-                {{ auditing ? 'Auditando...' : 'Reauditar' }}
+                {{ auditing ? 'Auditando...' : 'Auditar (opcional)' }}
               </button>
             </div>
             <div class="grid md:grid-cols-4 gap-2 text-sm">
@@ -846,88 +843,95 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800 overflow-x-auto">
-            <div class="text-xs uppercase tracking-wider text-slate-400 mb-3">Auditoria por plataforma</div>
-            <table class="w-full text-sm">
-              <thead class="text-slate-400">
-                <tr>
-                  <th class="text-left py-1">Plataforma</th>
-                  <th class="text-right py-1">Total</th>
-                  <th class="text-right py-1">Imagens</th>
-                  <th class="text-right py-1">Vídeos</th>
-                  <th class="text-right py-1">Mistos</th>
-                  <th class="text-right py-1">N/ID</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in platformRows" :key="row.platform" class="border-t border-slate-800">
-                  <td class="py-1.5">{{ platformLabel(row.platform) }}</td>
-                  <td class="py-1.5 text-right">{{ row.total }}</td>
-                  <td class="py-1.5 text-right">{{ row.image }}</td>
-                  <td class="py-1.5 text-right">{{ row.video }}</td>
-                  <td class="py-1.5 text-right">{{ row.mixed }}</td>
-                  <td class="py-1.5 text-right">{{ row.unknown }}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
+          <details class="bg-slate-900/40 p-4 rounded-xl border border-slate-800">
+            <summary class="cursor-pointer text-xs uppercase tracking-wider text-slate-400 select-none">
+              Auditoria (opcional)
+            </summary>
+            <div class="mt-4 space-y-4">
+              <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800 overflow-x-auto">
+                <div class="text-xs uppercase tracking-wider text-slate-400 mb-3">Auditoria por plataforma</div>
+                <table class="w-full text-sm">
+                  <thead class="text-slate-400">
+                    <tr>
+                      <th class="text-left py-1">Plataforma</th>
+                      <th class="text-right py-1">Total</th>
+                      <th class="text-right py-1">Imagens</th>
+                      <th class="text-right py-1">Vídeos</th>
+                      <th class="text-right py-1">Mistos</th>
+                      <th class="text-right py-1">N/ID</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in platformRows" :key="row.platform" class="border-t border-slate-800">
+                      <td class="py-1.5">{{ platformLabel(row.platform) }}</td>
+                      <td class="py-1.5 text-right">{{ row.total }}</td>
+                      <td class="py-1.5 text-right">{{ row.image }}</td>
+                      <td class="py-1.5 text-right">{{ row.video }}</td>
+                      <td class="py-1.5 text-right">{{ row.mixed }}</td>
+                      <td class="py-1.5 text-right">{{ row.unknown }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
 
-          <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
-            <div class="flex items-center justify-between mb-3">
-              <div class="text-xs uppercase tracking-wider text-slate-400">Lista auditável de links coletados</div>
-              <div class="flex items-center gap-2">
-                <button
-                  @click="copyAuditList"
-                  class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
-                >
-                  Copiar lista
-                </button>
-                <button
-                  @click="exportAuditList"
-                  :disabled="exportingAudit"
-                  class="text-xs px-3 py-1.5 rounded-md bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50"
-                >
-                  {{ exportingAudit ? 'Exportando...' : 'Exportar arquivo' }}
-                </button>
+              <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="text-xs uppercase tracking-wider text-slate-400">Lista auditável de links coletados</div>
+                  <div class="flex items-center gap-2">
+                    <button
+                      @click="copyAuditList"
+                      class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
+                    >
+                      Copiar lista
+                    </button>
+                    <button
+                      @click="exportAuditList"
+                      :disabled="exportingAudit"
+                      class="text-xs px-3 py-1.5 rounded-md bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50"
+                    >
+                      {{ exportingAudit ? 'Exportando...' : 'Exportar arquivo' }}
+                    </button>
+                  </div>
+                </div>
+                <div v-if="auditActionStatus" class="text-xs text-emerald-300 mb-2 break-all">{{ auditActionStatus }}</div>
+                <div class="max-h-64 overflow-y-auto border border-slate-800 rounded-lg">
+                  <table class="w-full text-xs">
+                    <thead class="bg-slate-950 text-slate-400 sticky top-0">
+                      <tr>
+                        <th class="text-left py-2 px-2">#</th>
+                        <th class="text-left py-2 px-2">Plataforma</th>
+                        <th class="text-left py-2 px-2">Tipo</th>
+                        <th class="text-left py-2 px-2">Seleção</th>
+                        <th class="text-left py-2 px-2">URL</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="row in auditableLinks" :key="row.url" class="border-t border-slate-800">
+                        <td class="py-2 px-2 text-slate-400">{{ row.index }}</td>
+                        <td class="py-2 px-2">{{ platformLabel(row.platform) }}</td>
+                        <td class="py-2 px-2">{{ mediaLabel(row.mediaType) }}</td>
+                        <td class="py-2 px-2">
+                          <span :class="row.selected ? 'text-emerald-300' : 'text-amber-300'">
+                            {{ row.selected ? 'Selecionado' : 'Fora da seleção' }}
+                          </span>
+                        </td>
+                        <td class="py-2 px-2">
+                          <a
+                            :href="row.url"
+                            target="_blank"
+                            rel="noreferrer"
+                            class="text-cyan-300 hover:text-cyan-200 underline break-all"
+                          >
+                            {{ row.url }}
+                          </a>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
-            <div v-if="auditActionStatus" class="text-xs text-emerald-300 mb-2 break-all">{{ auditActionStatus }}</div>
-            <div class="max-h-64 overflow-y-auto border border-slate-800 rounded-lg">
-              <table class="w-full text-xs">
-                <thead class="bg-slate-950 text-slate-400 sticky top-0">
-                  <tr>
-                    <th class="text-left py-2 px-2">#</th>
-                    <th class="text-left py-2 px-2">Plataforma</th>
-                    <th class="text-left py-2 px-2">Tipo</th>
-                    <th class="text-left py-2 px-2">Seleção</th>
-                    <th class="text-left py-2 px-2">URL</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="row in auditableLinks" :key="row.url" class="border-t border-slate-800">
-                    <td class="py-2 px-2 text-slate-400">{{ row.index }}</td>
-                    <td class="py-2 px-2">{{ platformLabel(row.platform) }}</td>
-                    <td class="py-2 px-2">{{ mediaLabel(row.mediaType) }}</td>
-                    <td class="py-2 px-2">
-                      <span :class="row.selected ? 'text-emerald-300' : 'text-amber-300'">
-                        {{ row.selected ? 'Selecionado' : 'Fora da seleção' }}
-                      </span>
-                    </td>
-                    <td class="py-2 px-2">
-                      <a
-                        :href="row.url"
-                        target="_blank"
-                        rel="noreferrer"
-                        class="text-cyan-300 hover:text-cyan-200 underline break-all"
-                      >
-                        {{ row.url }}
-                      </a>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
+          </details>
 
           <div class="grid md:grid-cols-2 gap-4" v-if="!isDownloading && downloadProgress === 0">
             <div>
@@ -960,7 +964,7 @@ onBeforeUnmount(() => {
           <div v-if="!isDownloading && downloadProgress === 0" class="space-y-3">
             <button
               @click="startDownload"
-              :disabled="selectedCount === 0 || auditing"
+              :disabled="selectedCount === 0"
               class="w-full py-4 rounded-xl font-bold text-lg bg-green-500 hover:bg-green-400 text-white shadow-lg shadow-green-500/25 transition-all transform hover:scale-[1.01] active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               ⬇️ Baixar {{ selectedCount }} link(s) selecionado(s)
