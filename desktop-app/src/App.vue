@@ -59,7 +59,26 @@ const allPlatforms: Platform[] = ['instagram', 'tiktok', 'twitter', 'kwai']
 const isElectron = () => Boolean((window as any).electronAPI)
 
 const normalizeUrl = (rawUrl: string) => {
-  return rawUrl.trim().replace(/[)\],.;!?]+$/g, '')
+  const cleaned = rawUrl.trim().replace(/[)\],.;!?]+$/g, '')
+  try {
+    const parsed = new URL(cleaned)
+    const host = parsed.hostname.toLowerCase()
+    parsed.hash = ''
+    if (
+      host.includes('instagram.com') ||
+      host.includes('tiktok.com') ||
+      host === 'x.com' ||
+      host.endsWith('.x.com') ||
+      host.includes('twitter.com') ||
+      host.includes('kwai.com') ||
+      host.includes('kwai-video.com')
+    ) {
+      parsed.search = ''
+    }
+    return parsed.toString()
+  } catch {
+    return cleaned
+  }
 }
 
 const detectPlatform = (url: string): Platform | 'unknown' => {
@@ -80,6 +99,7 @@ const fallbackMediaType = (url: string, platform: Platform): MediaType => {
   if (platform === 'kwai') return 'video'
   if (platform === 'tiktok') return normalized.includes('/photo/') ? 'image' : 'video'
   if (platform === 'instagram' && (normalized.includes('/reel/') || normalized.includes('/tv/'))) return 'video'
+  if (platform === 'instagram' && (normalized.includes('/p/') || normalized.includes('/stories/'))) return 'mixed'
   return 'unknown'
 }
 
@@ -94,7 +114,7 @@ const mediaLabel = (mediaType: MediaType) => {
   if (mediaType === 'image') return 'Imagem'
   if (mediaType === 'video') return 'Vídeo'
   if (mediaType === 'mixed') return 'Misto'
-  return 'Desconhecido'
+  return 'Não identificado'
 }
 
 const mediaTotals = computed(() => {
@@ -155,6 +175,51 @@ const platformRows = computed(() => {
       unknown: number
     }>
 })
+
+const auditableLinks = computed(() => {
+  return links.value.map((item, index) => ({
+    index: index + 1,
+    url: item.url,
+    platform: item.platform,
+    mediaType: item.mediaType,
+    selected: platformSelection.value[item.platform]
+  }))
+})
+
+const copyAuditStatus = ref('')
+
+const copyAuditList = async () => {
+  const lines: string[] = []
+  lines.push(`Total links suportados: ${links.value.length}`)
+  lines.push(`Total links não suportados: ${unsupportedLinks.value.length}`)
+  lines.push('')
+  lines.push('=== LINKS SUPORTADOS ===')
+
+  for (const row of auditableLinks.value) {
+    lines.push(
+      `${row.index}. [${platformLabel(row.platform)}] [${mediaLabel(row.mediaType)}] [${row.selected ? 'Selecionado' : 'Fora da seleção'}] ${row.url}`
+    )
+  }
+
+  if (unsupportedLinks.value.length > 0) {
+    lines.push('')
+    lines.push('=== LINKS NÃO SUPORTADOS ===')
+    for (const [index, link] of unsupportedLinks.value.entries()) {
+      lines.push(`${index + 1}. ${link}`)
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(lines.join('\n'))
+    copyAuditStatus.value = 'Lista copiada para a área de transferência.'
+  } catch {
+    copyAuditStatus.value = 'Não foi possível copiar automaticamente.'
+  }
+
+  setTimeout(() => {
+    copyAuditStatus.value = ''
+  }, 3000)
+}
 
 const parseLinksLocally = (input: string) => {
   const rawUrls = input.match(/https?:\/\/[^\s<>"'\\]+/g) || []
@@ -373,8 +438,9 @@ const reset = () => {
                 <div class="bg-slate-950/70 rounded-md p-2">Imagens: <strong class="text-white">{{ mediaTotals.image }}</strong></div>
                 <div class="bg-slate-950/70 rounded-md p-2">Vídeos: <strong class="text-white">{{ mediaTotals.video }}</strong></div>
                 <div class="bg-slate-950/70 rounded-md p-2">Mistos: <strong class="text-white">{{ mediaTotals.mixed }}</strong></div>
-                <div class="bg-slate-950/70 rounded-md p-2">Desconhecidos: <strong class="text-white">{{ mediaTotals.unknown }}</strong></div>
+                <div class="bg-slate-950/70 rounded-md p-2">Não identificados: <strong class="text-white">{{ mediaTotals.unknown }}</strong></div>
               </div>
+              <p class="text-[11px] text-slate-500 mt-2">"Não identificados" = link suportado, mas sem tipo de mídia confirmado no metadata probe.</p>
               <p v-if="auditing" class="text-xs text-pink-300 mt-3">Auditando metadados de mídia...</p>
             </div>
           </div>
@@ -417,7 +483,7 @@ const reset = () => {
                   <th class="text-right py-1">Imagens</th>
                   <th class="text-right py-1">Vídeos</th>
                   <th class="text-right py-1">Mistos</th>
-                  <th class="text-right py-1">Desc.</th>
+                  <th class="text-right py-1">N/ID</th>
                 </tr>
               </thead>
               <tbody>
@@ -431,6 +497,54 @@ const reset = () => {
                 </tr>
               </tbody>
             </table>
+          </div>
+
+          <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
+            <div class="flex items-center justify-between mb-3">
+              <div class="text-xs uppercase tracking-wider text-slate-400">Lista auditável de links coletados</div>
+              <button
+                @click="copyAuditList"
+                class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
+              >
+                Copiar lista
+              </button>
+            </div>
+            <div v-if="copyAuditStatus" class="text-xs text-emerald-300 mb-2">{{ copyAuditStatus }}</div>
+            <div class="max-h-64 overflow-y-auto border border-slate-800 rounded-lg">
+              <table class="w-full text-xs">
+                <thead class="bg-slate-950 text-slate-400 sticky top-0">
+                  <tr>
+                    <th class="text-left py-2 px-2">#</th>
+                    <th class="text-left py-2 px-2">Plataforma</th>
+                    <th class="text-left py-2 px-2">Tipo</th>
+                    <th class="text-left py-2 px-2">Seleção</th>
+                    <th class="text-left py-2 px-2">URL</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in auditableLinks" :key="row.url" class="border-t border-slate-800">
+                    <td class="py-2 px-2 text-slate-400">{{ row.index }}</td>
+                    <td class="py-2 px-2">{{ platformLabel(row.platform) }}</td>
+                    <td class="py-2 px-2">{{ mediaLabel(row.mediaType) }}</td>
+                    <td class="py-2 px-2">
+                      <span :class="row.selected ? 'text-emerald-300' : 'text-amber-300'">
+                        {{ row.selected ? 'Selecionado' : 'Fora da seleção' }}
+                      </span>
+                    </td>
+                    <td class="py-2 px-2">
+                      <a
+                        :href="row.url"
+                        target="_blank"
+                        rel="noreferrer"
+                        class="text-cyan-300 hover:text-cyan-200 underline break-all"
+                      >
+                        {{ row.url }}
+                      </a>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div class="grid md:grid-cols-2 gap-4" v-if="!isDownloading && downloadProgress === 0">
@@ -457,7 +571,7 @@ const reset = () => {
               <div class="bg-slate-950/70 rounded-md p-2">Links: <strong>{{ selectedCount }}</strong></div>
               <div class="bg-slate-950/70 rounded-md p-2">Imagens: <strong>{{ selectedMediaTotals.image }}</strong></div>
               <div class="bg-slate-950/70 rounded-md p-2">Vídeos: <strong>{{ selectedMediaTotals.video }}</strong></div>
-              <div class="bg-slate-950/70 rounded-md p-2">Mistos/Desc.: <strong>{{ selectedMediaTotals.mixed + selectedMediaTotals.unknown }}</strong></div>
+              <div class="bg-slate-950/70 rounded-md p-2">Mistos/N-ID: <strong>{{ selectedMediaTotals.mixed + selectedMediaTotals.unknown }}</strong></div>
             </div>
           </div>
 

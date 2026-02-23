@@ -6,6 +6,7 @@ let mainWindow
 
 const SUPPORTED_PLATFORMS = ['instagram', 'tiktok', 'twitter', 'kwai']
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'])
+const SHORTENER_HOSTS = new Set(['bit.ly', 'www.bit.ly', 't.co', 'tinyurl.com', 'is.gd', 'cutt.ly', 'buff.ly'])
 
 function createWindow() {
     mainWindow = new BrowserWindow({
@@ -31,6 +32,17 @@ function createWindow() {
 function normalizeUrl(rawUrl) {
     let normalized = String(rawUrl || '').trim()
     normalized = normalized.replace(/[)\],.;!?]+$/g, '')
+    try {
+        const parsed = new URL(normalized)
+        parsed.hash = ''
+        const platform = detectPlatform(parsed.toString())
+        if (platform !== 'unknown') {
+            parsed.search = ''
+        }
+        normalized = parsed.toString()
+    } catch {
+        return normalized
+    }
     return normalized
 }
 
@@ -48,30 +60,79 @@ function detectPlatform(urlString) {
     }
 }
 
-function extractLinks(inputText) {
+async function extractLinks(inputText) {
     const rawUrls = String(inputText || '').match(/https?:\/\/[^\s<>"'\\]+/g) || []
     const deduped = new Map()
     for (const rawUrl of rawUrls) {
         const normalized = normalizeUrl(rawUrl)
         if (!deduped.has(normalized)) {
-            deduped.set(normalized, { url: normalized, platform: detectPlatform(normalized) })
+            deduped.set(normalized, { url: normalized, platform: detectPlatform(normalized), originalUrl: normalized })
         }
     }
 
     const allLinks = Array.from(deduped.values())
-    const supported = allLinks.filter((item) => SUPPORTED_PLATFORMS.includes(item.platform))
-    const unsupported = allLinks.filter((item) => item.platform === 'unknown')
+    for (const item of allLinks) {
+        if (item.platform !== 'unknown') continue
+        if (!isShortener(item.url)) continue
+        const resolvedUrl = await resolveShortUrl(item.url)
+        item.url = normalizeUrl(resolvedUrl)
+        item.platform = detectPlatform(item.url)
+    }
+
+    const finalDeduped = new Map()
+    for (const item of allLinks) {
+        if (!finalDeduped.has(item.url)) {
+            finalDeduped.set(item.url, item)
+        }
+    }
+    const uniqueLinks = Array.from(finalDeduped.values())
+    const supported = uniqueLinks.filter((item) => SUPPORTED_PLATFORMS.includes(item.platform))
+    const unsupported = uniqueLinks.filter((item) => item.platform === 'unknown')
 
     return {
         links: supported,
-        unsupportedLinks: unsupported.map((item) => item.url),
+        unsupportedLinks: unsupported.map((item) => item.originalUrl || item.url),
         totals: {
             extracted: rawUrls.length,
-            unique: allLinks.length,
+            unique: uniqueLinks.length,
             supported: supported.length,
             unsupported: unsupported.length
         }
     }
+}
+
+function isShortener(urlString) {
+    try {
+        const hostname = new URL(urlString).hostname.toLowerCase()
+        return SHORTENER_HOSTS.has(hostname)
+    } catch {
+        return false
+    }
+}
+
+async function resolveShortUrl(urlString) {
+    const doRequest = async (method) => {
+        const controller = new AbortController()
+        const timeout = setTimeout(() => controller.abort(), 4500)
+        try {
+            const response = await fetch(urlString, {
+                method,
+                redirect: 'follow',
+                signal: controller.signal
+            })
+            return response.url ? normalizeUrl(response.url) : urlString
+        } catch {
+            return urlString
+        } finally {
+            clearTimeout(timeout)
+        }
+    }
+
+    const headResolved = await doRequest('HEAD')
+    if (headResolved !== urlString) {
+        return headResolved
+    }
+    return doRequest('GET')
 }
 
 function runCommand(command, args) {
@@ -148,8 +209,8 @@ function fallbackMediaType(url, platform) {
     if (platform === 'tiktok') return lowerUrl.includes('/photo/') ? 'image' : 'video'
     if (platform === 'instagram') {
         if (lowerUrl.includes('/reel/') || lowerUrl.includes('/tv/')) return 'video'
-        if (lowerUrl.includes('/stories/')) return 'unknown'
-        return 'unknown'
+        if (lowerUrl.includes('/p/') || lowerUrl.includes('/stories/')) return 'mixed'
+        return 'mixed'
     }
     if (platform === 'twitter') return 'unknown'
     return 'unknown'
@@ -200,10 +261,11 @@ async function probeMedia(url, browser) {
 
 async function downloadMedia({ url, browser, saveMode }) {
     const outputDir = path.join(app.getPath('downloads'), 'InstaBatch')
-    const platform = detectPlatform(url)
+    const normalizedUrl = normalizeUrl(url)
+    const platform = detectPlatform(normalizedUrl)
 
     if (platform === 'kwai') {
-        const args = ['--no-warnings', '--no-progress']
+        const args = ['--no-warnings', '--no-progress', '--output-na-placeholder', 'na']
         if (browser) {
             args.push('--cookies-from-browser', browser)
         }
@@ -212,20 +274,20 @@ async function downloadMedia({ url, browser, saveMode }) {
         if (saveMode === 'perfil') {
             args.push(
                 '-o',
-                '%(uploader|channel|creator|id)s/%(title).100B [%(id)s].%(ext)s'
+                '%(uploader).40B/%(title).90B [%(id).24B].%(ext)s'
             )
         } else {
             args.push(
                 '-o',
-                '%(title).100B [%(id)s].%(ext)s'
+                '%(title).90B [%(id).24B].%(ext)s'
             )
         }
 
-        args.push(url)
+        args.push(normalizedUrl)
         const result = await runCommand('yt-dlp', args)
         return {
             success: result.ok,
-            url,
+            url: normalizedUrl,
             platform,
             tool: 'yt-dlp',
             error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
@@ -236,12 +298,12 @@ async function downloadMedia({ url, browser, saveMode }) {
     if (browser) {
         args.push('--cookies-from-browser', browser)
     }
-    args.push('-d', outputDir, url)
+    args.push('-d', outputDir, normalizedUrl)
 
     const result = await runCommand('gallery-dl', args)
     return {
         success: result.ok,
-        url,
+        url: normalizedUrl,
         platform,
         tool: 'gallery-dl',
         error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
@@ -261,7 +323,7 @@ app.on('window-all-closed', function () {
 })
 
 ipcMain.handle('parse-links', async (_event, inputText) => {
-    return extractLinks(inputText)
+    return await extractLinks(inputText)
 })
 
 ipcMain.handle('audit-links', async (_event, links, browser) => {
