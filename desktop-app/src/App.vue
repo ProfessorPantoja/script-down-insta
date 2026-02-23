@@ -514,7 +514,8 @@ const startDownload = async () => {
         saveMode: saveMode.value,
         concurrency: 3,
         retries: 1,
-        timeoutMs: 180000
+        timeoutMs: 180000,
+        openFolderOnFinish: openFolderOnFinish.value
       })
 
       if (!result?.ok) {
@@ -613,7 +614,8 @@ const retryFailed = async () => {
         saveMode: saveMode.value,
         concurrency: 3,
         retries: 1,
-        timeoutMs: 180000
+        timeoutMs: 180000,
+        openFolderOnFinish: openFolderOnFinish.value
       })
 
       if (!result?.ok) throw new Error(result?.error || 'Falha ao iniciar retry')
@@ -710,9 +712,8 @@ const handleBatchDone = (payload: any) => {
     return
   }
   downloadActionStatus.value = outputDir ? `Finalizado. Salvou em: ${outputDir}` : 'Finalizado.'
-
-  if (openFolderOnFinish.value && isElectron() && (window as any).electronAPI?.openDownloadFolder) {
-    ;(window as any).electronAPI.openDownloadFolder()
+  if (payload?.openFolder?.ok === false) {
+    downloadActionStatus.value = `Finalizado. Salvou em: ${outputDir || ''} (não consegui abrir a pasta automaticamente)`
   }
 }
 

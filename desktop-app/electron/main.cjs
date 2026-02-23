@@ -30,6 +30,40 @@ const toolCache = {
     ytDlp: null
 }
 
+function spawnDetached(command, args) {
+    try {
+        const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+        child.unref()
+        return { ok: true, command, args }
+    } catch (error) {
+        return { ok: false, command, args, error: error?.message || String(error) }
+    }
+}
+
+async function openFolderBestEffort(folderPath) {
+    try {
+        await fs.mkdir(folderPath, { recursive: true })
+    } catch { }
+
+    if (process.platform === 'linux') {
+        return spawnDetached('xdg-open', [folderPath])
+    }
+    if (process.platform === 'win32') {
+        return spawnDetached('explorer.exe', [folderPath])
+    }
+    if (process.platform === 'darwin') {
+        return spawnDetached('open', [folderPath])
+    }
+
+    try {
+        const result = await shell.openPath(folderPath)
+        if (result) return { ok: false, error: result, command: 'shell.openPath', args: [folderPath] }
+        return { ok: true, command: 'shell.openPath', args: [folderPath] }
+    } catch (error) {
+        return { ok: false, error: error?.message || String(error), command: 'shell.openPath', args: [folderPath] }
+    }
+}
+
 async function getGalleryDlPath() {
     if (toolCache.galleryDl !== null) return toolCache.galleryDl
     toolCache.galleryDl = await resolveBinary('gallery-dl', 'GALLERY_DL_PATH')
@@ -433,13 +467,14 @@ function makeBatchId() {
 
 const activeBatches = new Map()
 
-async function startDownloadBatch({ links, browser, saveMode, concurrency, retries, timeoutMs }) {
+async function startDownloadBatch({ links, browser, saveMode, concurrency, retries, timeoutMs, openFolderOnFinish }) {
     const targets = Array.isArray(links) ? links.filter(Boolean) : []
     const batchId = makeBatchId()
 
     const limit = Math.max(1, Math.min(Number(concurrency) || 3, 5))
     const maxRetries = Math.max(0, Math.min(Number(retries) || 0, 5))
     const perItemTimeoutMs = Math.max(15000, Math.min(Number(timeoutMs) || 180000, 600000))
+    const shouldOpenFolder = Boolean(openFolderOnFinish)
 
     const batch = {
         id: batchId,
@@ -449,7 +484,8 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
         procs: new Set(),
         queue: targets.slice(),
         sendProgress: null,
-        sendDone: null
+        sendDone: null,
+        shouldOpenFolder
     }
     activeBatches.set(batchId, batch)
 
@@ -566,7 +602,11 @@ async function startDownloadBatch({ links, browser, saveMode, concurrency, retri
                 running -= 1
                 if (batch.completed >= batch.total) {
                     activeBatches.delete(batchId)
-                    sendDone({ batchId, cancelled: batch.cancelled, outputDir: DOWNLOAD_DIR })
+                    let openFolder = null
+                    if (!batch.cancelled && batch.shouldOpenFolder) {
+                        openFolder = await openFolderBestEffort(DOWNLOAD_DIR)
+                    }
+                    sendDone({ batchId, cancelled: batch.cancelled, outputDir: DOWNLOAD_DIR, openFolder })
                     return
                 }
                 await pump()
@@ -756,7 +796,8 @@ ipcMain.handle('download-batch-start', async (_event, payload) => {
         saveMode: safePayload.saveMode === 'misturado' ? 'misturado' : 'perfil',
         concurrency: safePayload.concurrency,
         retries: safePayload.retries,
-        timeoutMs: safePayload.timeoutMs
+        timeoutMs: safePayload.timeoutMs,
+        openFolderOnFinish: Boolean(safePayload.openFolderOnFinish)
     })
 })
 
@@ -766,12 +807,12 @@ ipcMain.handle('download-batch-cancel', async (_event, batchId) => {
 
 ipcMain.handle('open-download-folder', async () => {
     try {
-        await fs.mkdir(DOWNLOAD_DIR, { recursive: true })
-        const result = await shell.openPath(DOWNLOAD_DIR)
-        if (result) {
-            return { ok: false, error: result, path: DOWNLOAD_DIR }
+        const openResult = await openFolderBestEffort(DOWNLOAD_DIR)
+        return {
+            ok: Boolean(openResult?.ok),
+            path: DOWNLOAD_DIR,
+            details: openResult
         }
-        return { ok: true, path: DOWNLOAD_DIR }
     } catch (error) {
         return { ok: false, error: error?.message || String(error), path: DOWNLOAD_DIR }
     }
