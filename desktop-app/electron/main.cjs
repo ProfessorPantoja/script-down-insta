@@ -364,7 +364,7 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         }
 
         const targetDir = saveMode === 'misturado' ? path.join(outputDir, 'misturado') : outputDir
-        const args = ['--no-warnings', '--no-progress', '--output-na-placeholder', 'na']
+        const args = ['--no-warnings', '--no-progress', '--force-overwrites', '--output-na-placeholder', 'na']
         if (browser) {
             args.push('--cookies-from-browser', browser)
         }
@@ -409,6 +409,7 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         args.push('--cookies-from-browser', browser)
     }
     args.push('--no-input')
+    args.push('--no-skip')
     if (saveMode === 'misturado') {
         args.push('-D', path.join(outputDir, 'misturado'), normalizedUrl)
     } else {
