@@ -618,6 +618,13 @@ const retryFailed = async () => {
   }
 }
 
+const goBackToStart = () => {
+  if (isDownloading.value) return
+  closePasteMenu()
+  analyzeInputStatus.value = ''
+  currentStep.value = 1
+}
+
 const reset = () => {
   inputText.value = ''
   analyzeInputStatus.value = ''
@@ -749,6 +756,23 @@ onBeforeUnmount(() => {
         </div>
 
         <div v-else key="step2" class="space-y-6">
+          <div class="flex items-center justify-between">
+            <button
+              @click="goBackToStart"
+              :disabled="isDownloading"
+              class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+            >
+              ← Voltar
+            </button>
+            <button
+              @click="reset"
+              :disabled="isDownloading"
+              class="text-xs px-3 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-200"
+            >
+              Nova busca
+            </button>
+          </div>
+
           <div class="grid md:grid-cols-2 gap-4">
             <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
               <div class="text-xs uppercase tracking-wider text-slate-400 mb-2">Links</div>
@@ -931,7 +955,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="flex justify-between text-xs text-slate-500">
               <span>⚠️ Feche {{ selectedBrowser }} antes de iniciar.</span>
-              <button @click="reset" class="text-slate-400 hover:text-white">Nova busca</button>
+              <button @click="goBackToStart" class="text-slate-400 hover:text-white">Voltar para editar</button>
             </div>
           </div>
 
