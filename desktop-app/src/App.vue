@@ -186,9 +186,10 @@ const auditableLinks = computed(() => {
   }))
 })
 
-const copyAuditStatus = ref('')
+const auditActionStatus = ref('')
+const exportingAudit = ref(false)
 
-const copyAuditList = async () => {
+const buildAuditTextLines = () => {
   const lines: string[] = []
   lines.push(`Total links suportados: ${links.value.length}`)
   lines.push(`Total links não suportados: ${unsupportedLinks.value.length}`)
@@ -209,16 +210,74 @@ const copyAuditList = async () => {
     }
   }
 
+  return lines
+}
+
+const setAuditActionStatus = (message: string) => {
+  auditActionStatus.value = message
+  setTimeout(() => {
+    if (auditActionStatus.value === message) {
+      auditActionStatus.value = ''
+    }
+  }, 3200)
+}
+
+const copyAuditList = async () => {
   try {
-    await navigator.clipboard.writeText(lines.join('\n'))
-    copyAuditStatus.value = 'Lista copiada para a área de transferência.'
+    await navigator.clipboard.writeText(buildAuditTextLines().join('\n'))
+    setAuditActionStatus('Lista copiada para a área de transferência.')
   } catch {
-    copyAuditStatus.value = 'Não foi possível copiar automaticamente.'
+    setAuditActionStatus('Não foi possível copiar automaticamente.')
+  }
+}
+
+const exportAuditList = async () => {
+  if (exportingAudit.value) return
+
+  const payload = {
+    summary: {
+      supported: links.value.length,
+      unsupported: unsupportedLinks.value.length
+    },
+    rows: auditableLinks.value.map((row) => ({
+      index: row.index,
+      platform: platformLabel(row.platform),
+      mediaType: mediaLabel(row.mediaType),
+      selected: row.selected,
+      url: row.url
+    })),
+    unsupportedLinks: [...unsupportedLinks.value]
   }
 
-  setTimeout(() => {
-    copyAuditStatus.value = ''
-  }, 3000)
+  if (isElectron() && (window as any).electronAPI.exportAuditReport) {
+    exportingAudit.value = true
+    try {
+      const result = await (window as any).electronAPI.exportAuditReport(payload)
+      if (result?.ok) {
+        setAuditActionStatus(`Arquivo exportado: ${result.path}`)
+      } else if (!result?.cancelled) {
+        setAuditActionStatus(`Falha ao exportar: ${result?.error || 'erro desconhecido'}`)
+      }
+    } catch (error) {
+      setAuditActionStatus(`Falha ao exportar: ${String(error)}`)
+    } finally {
+      exportingAudit.value = false
+    }
+    return
+  }
+
+  try {
+    const blob = new Blob([`${buildAuditTextLines().join('\n')}\n`], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `auditoria_links_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.txt`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setAuditActionStatus('Arquivo TXT exportado pelo navegador.')
+  } catch {
+    setAuditActionStatus('Não foi possível exportar no modo navegador.')
+  }
 }
 
 const parseLinksLocally = (input: string) => {
@@ -502,14 +561,23 @@ const reset = () => {
           <div class="bg-slate-900/50 p-4 rounded-xl border border-slate-800">
             <div class="flex items-center justify-between mb-3">
               <div class="text-xs uppercase tracking-wider text-slate-400">Lista auditável de links coletados</div>
-              <button
-                @click="copyAuditList"
-                class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
-              >
-                Copiar lista
-              </button>
+              <div class="flex items-center gap-2">
+                <button
+                  @click="copyAuditList"
+                  class="text-xs px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600"
+                >
+                  Copiar lista
+                </button>
+                <button
+                  @click="exportAuditList"
+                  :disabled="exportingAudit"
+                  class="text-xs px-3 py-1.5 rounded-md bg-indigo-700 hover:bg-indigo-600 disabled:opacity-50"
+                >
+                  {{ exportingAudit ? 'Exportando...' : 'Exportar arquivo' }}
+                </button>
+              </div>
             </div>
-            <div v-if="copyAuditStatus" class="text-xs text-emerald-300 mb-2">{{ copyAuditStatus }}</div>
+            <div v-if="auditActionStatus" class="text-xs text-emerald-300 mb-2 break-all">{{ auditActionStatus }}</div>
             <div class="max-h-64 overflow-y-auto border border-slate-800 rounded-lg">
               <table class="w-full text-xs">
                 <thead class="bg-slate-950 text-slate-400 sticky top-0">

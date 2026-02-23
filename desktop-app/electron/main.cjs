@@ -1,6 +1,7 @@
-const { app, BrowserWindow, ipcMain } = require('electron')
+const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
+const fs = require('fs/promises')
 
 let mainWindow
 
@@ -44,6 +45,20 @@ function normalizeUrl(rawUrl) {
         return normalized
     }
     return normalized
+}
+
+function csvEscape(value) {
+    const text = String(value ?? '')
+    if (text.includes('"') || text.includes(',') || text.includes('\n') || text.includes('\r')) {
+        return `"${text.replace(/"/g, '""')}"`
+    }
+    return text
+}
+
+function nowStamp() {
+    const date = new Date()
+    const pad = (n) => String(n).padStart(2, '0')
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`
 }
 
 function detectPlatform(urlString) {
@@ -309,6 +324,82 @@ async function downloadMedia({ url, browser, saveMode }) {
         error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
     }
 }
+
+ipcMain.handle('export-audit-report', async (_event, payload) => {
+    try {
+        const safePayload = payload && typeof payload === 'object' ? payload : {}
+        const summary = safePayload.summary || {}
+        const rows = Array.isArray(safePayload.rows) ? safePayload.rows : []
+        const unsupported = Array.isArray(safePayload.unsupportedLinks) ? safePayload.unsupportedLinks : []
+        const defaultName = `auditoria_links_${nowStamp()}.csv`
+
+        const saveResult = await dialog.showSaveDialog(mainWindow, {
+            title: 'Exportar auditoria de links',
+            defaultPath: path.join(app.getPath('downloads'), defaultName),
+            filters: [
+                { name: 'CSV', extensions: ['csv'] },
+                { name: 'Texto', extensions: ['txt'] }
+            ]
+        })
+
+        if (saveResult.canceled || !saveResult.filePath) {
+            return { ok: false, cancelled: true }
+        }
+
+        const filePath = saveResult.filePath
+        const lower = filePath.toLowerCase()
+        const wantsTxt = lower.endsWith('.txt')
+
+        if (wantsTxt) {
+            const lines = []
+            lines.push(`Total links suportados: ${summary.supported ?? rows.length}`)
+            lines.push(`Total links não suportados: ${summary.unsupported ?? unsupported.length}`)
+            lines.push('')
+            lines.push('=== LINKS SUPORTADOS ===')
+            for (const row of rows) {
+                lines.push(
+                    `${row.index}. [${row.platform}] [${row.mediaType}] [${row.selected ? 'Selecionado' : 'Fora da seleção'}] ${row.url}`
+                )
+            }
+            if (unsupported.length > 0) {
+                lines.push('')
+                lines.push('=== LINKS NÃO SUPORTADOS ===')
+                for (const [index, link] of unsupported.entries()) {
+                    lines.push(`${index + 1}. ${link}`)
+                }
+            }
+            await fs.writeFile(filePath, `${lines.join('\n')}\n`, 'utf8')
+            return { ok: true, path: filePath, format: 'txt' }
+        }
+
+        const csvLines = []
+        csvLines.push('index,platform,media_type,selected,url')
+        for (const row of rows) {
+            csvLines.push([
+                csvEscape(row.index ?? ''),
+                csvEscape(row.platform ?? ''),
+                csvEscape(row.mediaType ?? ''),
+                csvEscape(row.selected ? 'yes' : 'no'),
+                csvEscape(row.url ?? '')
+            ].join(','))
+        }
+        if (unsupported.length > 0) {
+            csvLines.push('')
+            csvLines.push('unsupported_links')
+            for (const link of unsupported) {
+                csvLines.push(csvEscape(link))
+            }
+        }
+        await fs.writeFile(filePath, `${csvLines.join('\n')}\n`, 'utf8')
+        return { ok: true, path: filePath, format: 'csv' }
+    } catch (error) {
+        return {
+            ok: false,
+            cancelled: false,
+            error: error?.message || String(error)
+        }
+    }
+})
 
 app.whenReady().then(() => {
     createWindow()
