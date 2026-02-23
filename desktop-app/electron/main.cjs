@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, dialog } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const fs = require('fs/promises')
+const { resolveBinary } = require('./binaries.cjs')
 
 if (process.env.ELECTRON_RUN_AS_NODE) {
     console.error(
@@ -22,6 +23,23 @@ if (!process.versions || !process.versions.electron) {
 app.disableHardwareAcceleration()
 
 let mainWindow
+
+const toolCache = {
+    galleryDl: null,
+    ytDlp: null
+}
+
+async function getGalleryDlPath() {
+    if (toolCache.galleryDl !== null) return toolCache.galleryDl
+    toolCache.galleryDl = await resolveBinary('gallery-dl', 'GALLERY_DL_PATH')
+    return toolCache.galleryDl
+}
+
+async function getYtDlpPath() {
+    if (toolCache.ytDlp !== null) return toolCache.ytDlp
+    toolCache.ytDlp = await resolveBinary('yt-dlp', 'YTDLP_PATH')
+    return toolCache.ytDlp
+}
 
 const SUPPORTED_PLATFORMS = ['instagram', 'tiktok', 'twitter', 'kwai']
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp'])
@@ -168,11 +186,28 @@ async function resolveShortUrl(urlString) {
     return doRequest('GET')
 }
 
-function runCommand(command, args) {
+function runCommand(command, args, options = {}) {
     return new Promise((resolve) => {
-        const proc = spawn(command, args)
+        const proc = spawn(command, args, { windowsHide: true })
         let stdout = ''
         let stderr = ''
+        let timedOut = false
+
+        const timeoutMs = typeof options.timeoutMs === 'number' ? options.timeoutMs : 0
+        const timeout = timeoutMs > 0
+            ? setTimeout(() => {
+                timedOut = true
+                try {
+                    proc.kill('SIGTERM')
+                } catch { }
+            }, timeoutMs)
+            : null
+
+        if (typeof options.onProcess === 'function') {
+            try {
+                options.onProcess(proc)
+            } catch { }
+        }
 
         proc.stdout.on('data', (data) => {
             stdout += data.toString()
@@ -183,15 +218,17 @@ function runCommand(command, args) {
         })
 
         proc.on('close', (code) => {
+            if (timeout) clearTimeout(timeout)
             resolve({
                 ok: code === 0,
                 code,
                 stdout: stdout.trim(),
-                stderr: stderr.trim()
+                stderr: timedOut ? `Timeout após ${timeoutMs}ms` : stderr.trim()
             })
         })
 
         proc.on('error', (error) => {
+            if (timeout) clearTimeout(timeout)
             resolve({
                 ok: false,
                 code: -1,
@@ -249,14 +286,30 @@ function fallbackMediaType(url, platform) {
     return 'unknown'
 }
 
-async function probeMedia(url, browser) {
+async function probeMedia(url, browser, options = {}) {
+    const ytDlpPath = await getYtDlpPath()
+    if (!ytDlpPath) {
+        const platform = detectPlatform(url)
+        return {
+            url,
+            platform,
+            mediaType: fallbackMediaType(url, platform),
+            source: 'fallback',
+            ok: false,
+            error: 'yt-dlp não encontrado (instale ou defina YTDLP_PATH)'
+        }
+    }
+
     const args = ['--skip-download', '--dump-single-json', '--no-warnings']
     if (browser) {
         args.push('--cookies-from-browser', browser)
     }
     args.push(url)
 
-    const probe = await runCommand('yt-dlp', args)
+    const probe = await runCommand(ytDlpPath, args, {
+        timeoutMs: typeof options.timeoutMs === 'number' ? options.timeoutMs : 20000,
+        onProcess: options.onProcess
+    })
     if (!probe.ok || !probe.stdout) {
         const platform = detectPlatform(url)
         return {
@@ -292,17 +345,30 @@ async function probeMedia(url, browser) {
     }
 }
 
-async function downloadMedia({ url, browser, saveMode }) {
+async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
     const outputDir = path.join(app.getPath('downloads'), 'InstaBatch')
     const normalizedUrl = normalizeUrl(url)
     const platform = detectPlatform(normalizedUrl)
+    const perItemTimeoutMs = typeof timeoutMs === 'number' ? timeoutMs : 180000
 
     if (platform === 'kwai') {
+        const ytDlpPath = await getYtDlpPath()
+        if (!ytDlpPath) {
+            return {
+                success: false,
+                url: normalizedUrl,
+                platform,
+                tool: 'yt-dlp',
+                error: 'yt-dlp não encontrado (instale ou defina YTDLP_PATH)'
+            }
+        }
+
+        const targetDir = saveMode === 'misturado' ? path.join(outputDir, 'misturado') : outputDir
         const args = ['--no-warnings', '--no-progress', '--output-na-placeholder', 'na']
         if (browser) {
             args.push('--cookies-from-browser', browser)
         }
-        args.push('-P', outputDir)
+        args.push('-P', targetDir)
 
         if (saveMode === 'perfil') {
             args.push(
@@ -317,7 +383,7 @@ async function downloadMedia({ url, browser, saveMode }) {
         }
 
         args.push(normalizedUrl)
-        const result = await runCommand('yt-dlp', args)
+        const result = await runCommand(ytDlpPath, args, { timeoutMs: perItemTimeoutMs, onProcess })
         return {
             success: result.ok,
             url: normalizedUrl,
@@ -327,13 +393,28 @@ async function downloadMedia({ url, browser, saveMode }) {
         }
     }
 
+    const galleryDlPath = await getGalleryDlPath()
+    if (!galleryDlPath) {
+        return {
+            success: false,
+            url: normalizedUrl,
+            platform,
+            tool: 'gallery-dl',
+            error: 'gallery-dl não encontrado (instale ou defina GALLERY_DL_PATH)'
+        }
+    }
+
     const args = []
     if (browser) {
         args.push('--cookies-from-browser', browser)
     }
-    args.push('-d', outputDir, normalizedUrl)
+    if (saveMode === 'misturado') {
+        args.push('-D', path.join(outputDir, 'misturado'), normalizedUrl)
+    } else {
+        args.push('-d', outputDir, normalizedUrl)
+    }
 
-    const result = await runCommand('gallery-dl', args)
+    const result = await runCommand(galleryDlPath, args, { timeoutMs: perItemTimeoutMs, onProcess })
     return {
         success: result.ok,
         url: normalizedUrl,
@@ -341,6 +422,186 @@ async function downloadMedia({ url, browser, saveMode }) {
         tool: 'gallery-dl',
         error: result.ok ? undefined : (result.stderr || `Process exited with code ${result.code}`)
     }
+}
+
+function makeBatchId() {
+    return `${nowStamp()}_${Math.random().toString(16).slice(2)}`
+}
+
+const activeBatches = new Map()
+
+async function startDownloadBatch({ links, browser, saveMode, concurrency, retries, timeoutMs }) {
+    const targets = Array.isArray(links) ? links.filter(Boolean) : []
+    const batchId = makeBatchId()
+
+    const limit = Math.max(1, Math.min(Number(concurrency) || 3, 5))
+    const maxRetries = Math.max(0, Math.min(Number(retries) || 0, 5))
+    const perItemTimeoutMs = Math.max(15000, Math.min(Number(timeoutMs) || 180000, 600000))
+
+    const batch = {
+        id: batchId,
+        cancelled: false,
+        total: targets.length,
+        completed: 0,
+        procs: new Set(),
+        queue: targets.slice(),
+        sendProgress: null,
+        sendDone: null
+    }
+    activeBatches.set(batchId, batch)
+
+    if (batch.total === 0) {
+        activeBatches.delete(batchId)
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-batch-done', { batchId, cancelled: false })
+        }
+        return { ok: true, batchId, total: 0 }
+    }
+
+    const sendProgress = (payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-batch-progress', payload)
+        }
+    }
+
+    const sendDone = (payload) => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('download-batch-done', payload)
+        }
+    }
+
+    batch.sendProgress = sendProgress
+    batch.sendDone = sendDone
+
+    const worker = async (url) => {
+        const normalized = normalizeUrl(url)
+
+        if (batch.cancelled) {
+            return {
+                url: normalized,
+                success: false,
+                platform: detectPlatform(normalized),
+                error: 'Cancelado'
+            }
+        }
+
+        let lastError = ''
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            if (batch.cancelled) {
+                lastError = 'Cancelado'
+                break
+            }
+
+            const result = await downloadMedia({
+                url: normalized,
+                browser,
+                saveMode,
+                timeoutMs: perItemTimeoutMs,
+                onProcess: (proc) => {
+                    batch.procs.add(proc)
+                    proc.once('close', () => batch.procs.delete(proc))
+                }
+            })
+            if (result.success) return result
+
+            lastError = result.error || 'Falha no download'
+            if (attempt < maxRetries) {
+                await new Promise((resolve) => setTimeout(resolve, 500))
+            }
+        }
+
+        return {
+            success: false,
+            url: normalized,
+            platform: detectPlatform(normalized),
+            tool: detectPlatform(normalized) === 'kwai' ? 'yt-dlp' : 'gallery-dl',
+            error: lastError || 'Falha no download'
+        }
+    }
+
+    let running = 0
+
+    const pump = async () => {
+        while (!batch.cancelled && running < limit && batch.queue.length > 0) {
+            const nextUrl = batch.queue.shift()
+            if (!nextUrl) continue
+            running += 1
+
+            ; (async () => {
+                let itemResult
+                try {
+                    itemResult = await worker(nextUrl)
+                } catch (error) {
+                    itemResult = {
+                        success: false,
+                        url: normalizeUrl(nextUrl),
+                        platform: detectPlatform(nextUrl),
+                        tool: detectPlatform(nextUrl) === 'kwai' ? 'yt-dlp' : 'gallery-dl',
+                        error: error?.message || String(error)
+                    }
+                }
+
+                batch.completed += 1
+                sendProgress({
+                    batchId,
+                    completed: batch.completed,
+                    total: batch.total,
+                    item: itemResult
+                })
+
+                running -= 1
+                if (batch.completed >= batch.total) {
+                    activeBatches.delete(batchId)
+                    sendDone({ batchId, cancelled: batch.cancelled })
+                    return
+                }
+                await pump()
+            })()
+        }
+    }
+
+    await pump()
+    return { ok: true, batchId, total: batch.total }
+}
+
+function cancelDownloadBatch(batchId) {
+    const batch = activeBatches.get(batchId)
+    if (!batch) return { ok: false, error: 'Batch não encontrado' }
+    batch.cancelled = true
+
+    while (batch.queue && batch.queue.length > 0) {
+        const url = normalizeUrl(batch.queue.shift())
+        batch.completed += 1
+        const item = {
+            success: false,
+            url,
+            platform: detectPlatform(url),
+            tool: detectPlatform(url) === 'kwai' ? 'yt-dlp' : 'gallery-dl',
+            error: 'Cancelado'
+        }
+        if (typeof batch.sendProgress === 'function') {
+            batch.sendProgress({
+                batchId: batch.id,
+                completed: batch.completed,
+                total: batch.total,
+                item
+            })
+        }
+    }
+
+    for (const proc of batch.procs) {
+        try {
+            proc.kill('SIGTERM')
+        } catch { }
+    }
+
+    if (batch.completed >= batch.total) {
+        activeBatches.delete(batchId)
+        if (typeof batch.sendDone === 'function') {
+            batch.sendDone({ batchId: batch.id, cancelled: true })
+        }
+    }
+    return { ok: true }
 }
 
 ipcMain.handle('export-audit-report', async (_event, payload) => {
@@ -459,4 +720,32 @@ ipcMain.handle('start-download', async (_event, payloadOrUrl, legacyBrowser) => 
         browser: payload.browser || '',
         saveMode: payload.saveMode || 'perfil'
     })
+})
+
+ipcMain.handle('tools-status', async () => {
+    const [galleryDl, ytDlp] = await Promise.all([getGalleryDlPath(), getYtDlpPath()])
+    return {
+        galleryDl: Boolean(galleryDl),
+        ytDlp: Boolean(ytDlp),
+        paths: {
+            galleryDl: galleryDl || '',
+            ytDlp: ytDlp || ''
+        }
+    }
+})
+
+ipcMain.handle('download-batch-start', async (_event, payload) => {
+    const safePayload = payload && typeof payload === 'object' ? payload : {}
+    return await startDownloadBatch({
+        links: Array.isArray(safePayload.links) ? safePayload.links : [],
+        browser: typeof safePayload.browser === 'string' ? safePayload.browser : '',
+        saveMode: safePayload.saveMode === 'misturado' ? 'misturado' : 'perfil',
+        concurrency: safePayload.concurrency,
+        retries: safePayload.retries,
+        timeoutMs: safePayload.timeoutMs
+    })
+})
+
+ipcMain.handle('download-batch-cancel', async (_event, batchId) => {
+    return cancelDownloadBatch(String(batchId || ''))
 })

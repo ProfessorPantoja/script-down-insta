@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 type Platform = 'instagram' | 'tiktok' | 'twitter' | 'kwai'
 type MediaType = 'image' | 'video' | 'mixed' | 'unknown'
@@ -54,6 +54,13 @@ const platformSelection = ref<Record<Platform, boolean>>({
 const isDownloading = ref(false)
 const downloadProgress = ref(0)
 const downloadStatuses = ref<DownloadStatus[]>([])
+const downloadActionStatus = ref('')
+const cancellingDownload = ref(false)
+const activeBatchId = ref('')
+
+let unsubscribeBatchProgress: null | (() => void) = null
+let unsubscribeBatchDone: null | (() => void) = null
+let downloadIndexByUrl = new Map<string, number>()
 
 const allPlatforms: Platform[] = ['instagram', 'tiktok', 'twitter', 'kwai']
 
@@ -143,6 +150,7 @@ const selectedMediaTotals = computed(() => {
 })
 
 const selectedCount = computed(() => selectedLinks.value.length)
+const failedCount = computed(() => downloadStatuses.value.filter((item) => item.status === 'error').length)
 
 const platformRows = computed(() => {
   return allPlatforms
@@ -395,6 +403,9 @@ const startDownload = async () => {
   const targets = selectedLinks.value
   if (targets.length === 0) return
 
+  downloadActionStatus.value = ''
+  cancellingDownload.value = false
+
   isDownloading.value = true
   downloadProgress.value = 0
   downloadStatuses.value = targets.map((item) => ({
@@ -403,6 +414,61 @@ const startDownload = async () => {
     mediaType: item.mediaType,
     status: 'pending'
   }))
+
+  downloadIndexByUrl = new Map<string, number>()
+  for (const [index, item] of downloadStatuses.value.entries()) {
+    downloadIndexByUrl.set(normalizeUrl(item.url), index)
+  }
+
+  if (isElectron() && (window as any).electronAPI?.toolsStatus) {
+    try {
+      const tools = await (window as any).electronAPI.toolsStatus()
+      const needsGalleryDl = targets.some((item) => item.platform !== 'kwai')
+      const needsYtDlp = targets.some((item) => item.platform === 'kwai')
+
+      if (needsGalleryDl && !tools?.galleryDl) {
+        downloadActionStatus.value = 'Dependência ausente: gallery-dl não encontrado no sistema.'
+        isDownloading.value = false
+        return
+      }
+      if (needsYtDlp && !tools?.ytDlp) {
+        downloadActionStatus.value = 'Dependência ausente: yt-dlp não encontrado no sistema.'
+        isDownloading.value = false
+        return
+      }
+    } catch {
+      // ignore: seguimos e deixamos o backend retornar erro por item
+    }
+  }
+
+  if (isElectron() && (window as any).electronAPI?.startDownloadBatch) {
+    try {
+      const result = await (window as any).electronAPI.startDownloadBatch({
+        links: targets.map((item) => item.url),
+        browser: selectedBrowser.value,
+        saveMode: saveMode.value,
+        concurrency: 3,
+        retries: 1,
+        timeoutMs: 180000
+      })
+
+      if (!result?.ok) {
+        throw new Error(result?.error || 'Falha ao iniciar lote')
+      }
+      activeBatchId.value = String(result.batchId || '')
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      downloadStatuses.value = downloadStatuses.value.map((entry) => ({
+        ...entry,
+        status: 'error',
+        error: message
+      }))
+      downloadProgress.value = 100
+      isDownloading.value = false
+      return
+    }
+  }
 
   for (const [index, item] of targets.entries()) {
     const statusEntry = downloadStatuses.value[index]
@@ -434,6 +500,72 @@ const startDownload = async () => {
   isDownloading.value = false
 }
 
+const cancelDownload = async () => {
+  if (!activeBatchId.value) return
+  if (!isElectron() || !(window as any).electronAPI?.cancelDownloadBatch) return
+  if (cancellingDownload.value) return
+
+  cancellingDownload.value = true
+  try {
+    await (window as any).electronAPI.cancelDownloadBatch(activeBatchId.value)
+    downloadActionStatus.value = 'Cancelamento solicitado. Finalizando...'
+  } finally {
+    // o "done" vem via evento
+  }
+}
+
+const retryFailed = async () => {
+  if (failedCount.value === 0) return
+
+  const failed = downloadStatuses.value.filter((item) => item.status === 'error')
+  const failedUrls = failed.map((item) => item.url)
+  if (failedUrls.length === 0) return
+
+  for (const entry of downloadStatuses.value) {
+    if (entry.status === 'error') {
+      entry.status = 'pending'
+      entry.error = undefined
+    }
+  }
+
+  downloadActionStatus.value = ''
+  cancellingDownload.value = false
+  isDownloading.value = true
+  downloadProgress.value = 0
+
+  downloadIndexByUrl = new Map<string, number>()
+  for (const [index, entry] of downloadStatuses.value.entries()) {
+    downloadIndexByUrl.set(normalizeUrl(entry.url), index)
+  }
+
+  if (isElectron() && (window as any).electronAPI?.startDownloadBatch) {
+    try {
+      const result = await (window as any).electronAPI.startDownloadBatch({
+        links: failedUrls,
+        browser: selectedBrowser.value,
+        saveMode: saveMode.value,
+        concurrency: 3,
+        retries: 1,
+        timeoutMs: 180000
+      })
+
+      if (!result?.ok) throw new Error(result?.error || 'Falha ao iniciar retry')
+      activeBatchId.value = String(result.batchId || '')
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      for (const entry of downloadStatuses.value) {
+        if (entry.status === 'pending') {
+          entry.status = 'error'
+          entry.error = message
+        }
+      }
+      downloadProgress.value = 100
+      isDownloading.value = false
+    }
+  }
+}
+
 const reset = () => {
   inputText.value = ''
   analyzeInputStatus.value = ''
@@ -450,8 +582,58 @@ const reset = () => {
   auditing.value = false
   analyzing.value = false
   isDownloading.value = false
+  downloadActionStatus.value = ''
+  cancellingDownload.value = false
+  activeBatchId.value = ''
   currentStep.value = 1
 }
+
+const handleBatchProgress = (payload: any) => {
+  const batchId = String(payload?.batchId || '')
+  if (!batchId || batchId !== activeBatchId.value) return
+
+  const completed = Number(payload?.completed || 0)
+  const total = Number(payload?.total || 0)
+  if (total > 0) {
+    downloadProgress.value = (completed / total) * 100
+  }
+
+  const item = payload?.item || {}
+  const url = normalizeUrl(String(item.url || ''))
+  const index = downloadIndexByUrl.get(url)
+  if (index === undefined) return
+
+  const entry = downloadStatuses.value[index]
+  if (!entry) return
+
+  entry.status = item.success ? 'success' : 'error'
+  entry.error = item.success ? undefined : String(item.error || 'Falha no download')
+}
+
+const handleBatchDone = (payload: any) => {
+  const batchId = String(payload?.batchId || '')
+  if (!batchId || batchId !== activeBatchId.value) return
+  isDownloading.value = false
+  cancellingDownload.value = false
+  if (downloadProgress.value < 100) downloadProgress.value = 100
+  if (payload?.cancelled) downloadActionStatus.value = 'Download cancelado.'
+}
+
+onMounted(() => {
+  if (!isElectron()) return
+  const api = (window as any).electronAPI
+  if (!api?.onDownloadBatchProgress || !api?.onDownloadBatchDone) return
+
+  unsubscribeBatchProgress = api.onDownloadBatchProgress(handleBatchProgress)
+  unsubscribeBatchDone = api.onDownloadBatchDone(handleBatchDone)
+})
+
+onBeforeUnmount(() => {
+  unsubscribeBatchProgress?.()
+  unsubscribeBatchDone?.()
+  unsubscribeBatchProgress = null
+  unsubscribeBatchDone = null
+})
 </script>
 
 <template>
@@ -665,6 +847,9 @@ const reset = () => {
             >
               ⬇️ Baixar {{ selectedCount }} link(s) selecionado(s)
             </button>
+            <div v-if="downloadActionStatus" class="text-sm rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-amber-200">
+              {{ downloadActionStatus }}
+            </div>
             <div class="flex justify-between text-xs text-slate-500">
               <span>⚠️ Feche {{ selectedBrowser }} antes de iniciar.</span>
               <button @click="reset" class="text-slate-400 hover:text-white">Nova busca</button>
@@ -678,6 +863,17 @@ const reset = () => {
             </div>
             <div class="w-full bg-slate-800 rounded-full h-3">
               <div class="bg-gradient-to-r from-pink-500 to-orange-400 h-3 rounded-full transition-all duration-300" :style="{ width: downloadProgress + '%' }"></div>
+            </div>
+            <div class="flex items-center justify-between text-xs text-slate-400">
+              <span v-if="downloadActionStatus" class="text-amber-200">{{ downloadActionStatus }}</span>
+              <button
+                v-if="isDownloading"
+                @click="cancelDownload"
+                :disabled="cancellingDownload"
+                class="ml-auto px-3 py-1.5 rounded-md bg-slate-700 hover:bg-slate-600 disabled:opacity-50"
+              >
+                {{ cancellingDownload ? 'Cancelando...' : 'Cancelar' }}
+              </button>
             </div>
 
             <div class="mt-4 bg-slate-950 rounded-lg p-3 max-h-56 overflow-y-auto font-mono text-xs space-y-2 border border-slate-800">
@@ -694,13 +890,21 @@ const reset = () => {
               </div>
             </div>
 
-            <button
-              v-if="downloadProgress === 100 && !isDownloading"
-              @click="reset"
-              class="w-full py-3 mt-4 rounded-xl font-bold text-sm bg-slate-700 hover:bg-slate-600 text-white transition-colors"
-            >
-              Concluir e Voltar
-            </button>
+            <div v-if="downloadProgress === 100 && !isDownloading" class="grid md:grid-cols-2 gap-3 mt-4">
+              <button
+                v-if="failedCount > 0"
+                @click="retryFailed"
+                class="w-full py-3 rounded-xl font-bold text-sm bg-amber-600 hover:bg-amber-500 text-white transition-colors"
+              >
+                Repetir falhas ({{ failedCount }})
+              </button>
+              <button
+                @click="reset"
+                class="w-full py-3 rounded-xl font-bold text-sm bg-slate-700 hover:bg-slate-600 text-white transition-colors"
+              >
+                Concluir e Voltar
+              </button>
+            </div>
           </div>
         </div>
       </transition>
