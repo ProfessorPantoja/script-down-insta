@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_windows_installer:
+        description: "Gerar instalador do Windows (.exe)"
+        required: false
+        default: "true"
+
+jobs:
+  verify_linux:
+    name: verify (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+      - name: Install
+        working-directory: desktop-app
+        run: npm ci
+      - name: Verify (fast)
+        working-directory: desktop-app
+        run: npm run verify:fast
+
+  dist_win:
+    name: dist (windows)
+    runs-on: windows-latest
+    needs: verify_linux
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop-app/package-lock.json
+      - name: Install
+        working-directory: desktop-app
+        run: npm ci
+      - name: Build Windows installer
+        working-directory: desktop-app
+        run: npm run dist:win
+      - name: Upload installer artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: instabatch-windows-installer
+          path: |
+            desktop-app/release/*.exe
+            desktop-app/release/*.yml

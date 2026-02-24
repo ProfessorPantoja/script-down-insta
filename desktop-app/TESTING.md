@@ -43,3 +43,13 @@ Em um Windows:
 3) Instalar o `.exe` (NSIS)
 4) Repetir o smoke manual.
 
+## CI (GitHub Actions)
+
+O workflow roda:
+
+- `verify:fast` no Linux em todo push/PR
+- `dist:win` no Windows apenas quando:
+  - você dispara manualmente (Actions → CI → Run workflow), ou
+  - você cria uma tag `v*` (ex.: `v0.1.0`)
+
+O instalador do Windows fica disponível como *artifact* do job `dist (windows)`.
