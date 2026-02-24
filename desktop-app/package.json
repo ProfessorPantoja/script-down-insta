@@ -3,10 +3,14 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "main": "electron/main.cjs",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development node scripts/run-electron.mjs electron/main.cjs\"",
     "build": "vue-tsc -b && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "prepare:win-bins": "node scripts/fetch-windows-binaries.mjs",
+    "pack": "electron-builder --dir",
+    "dist:win": "npm run build && npm run prepare:win-bins && electron-builder --win --x64"
   },
   "dependencies": {
     "vue": "^3.5.25"
@@ -26,5 +30,37 @@
     "vite": "^7.3.1",
     "vue-tsc": "^3.1.5",
     "wait-on": "^9.0.4"
+  },
+  "build": {
+    "appId": "com.instabatch.downloader",
+    "productName": "InstaBatch",
+    "files": [
+      "dist/**",
+      "electron/**",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
   }
 }

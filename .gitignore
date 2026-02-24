@@ -1,1 +1,6 @@
 .playwright-cli/
+desktop-app/release/
+desktop-app/resources/bin/**
+!desktop-app/resources/bin/
+!desktop-app/resources/bin/win/
+!desktop-app/resources/bin/**/.gitkeep
