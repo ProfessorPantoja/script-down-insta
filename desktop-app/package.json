@@ -10,7 +10,9 @@
     "preview": "vite preview",
     "prepare:win-bins": "node scripts/fetch-windows-binaries.mjs",
     "pack": "electron-builder --dir",
-    "dist:win": "npm run build && npm run prepare:win-bins && electron-builder --win --x64"
+    "dist:win": "npm run build && npm run prepare:win-bins && electron-builder --win --x64",
+    "verify": "node scripts/verify.mjs",
+    "verify:fast": "node scripts/verify.mjs --fast"
   },
   "dependencies": {
     "vue": "^3.5.25"
