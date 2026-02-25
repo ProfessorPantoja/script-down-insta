@@ -43,6 +43,16 @@ Em um Windows:
 3) Instalar o `.exe` (NSIS)
 4) Repetir o smoke manual.
 
+### Windows: cookies e autenticação (Instagram)
+
+Durante o smoke no Windows, validar também:
+
+1) Teste com `Chrome` (ou `Edge`) selecionado em **Cookies do Navegador** e usuário logado.
+2) Conferir que o app mostra `Cookies selecionados: ...` durante o download.
+3) Para conteúdo que exige login, confirmar que não há `HTTP redirect to login page`.
+4) Se houver falha com `DPAPI`, confirmar que a mensagem reporta falha de cookies do navegador (não apenas redirect genérico).
+5) Repetir com outro navegador (preferência: `Firefox`) para comparar comportamento no mesmo link.
+
 ## CI (GitHub Actions)
 
 O workflow roda:

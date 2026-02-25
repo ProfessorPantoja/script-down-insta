@@ -330,6 +330,79 @@ function isCookieDecryptError(stderrText) {
     )
 }
 
+function isInstagramLoginRedirect(stderrText) {
+    const text = String(stderrText || '').toLowerCase()
+    return text.includes('instagram') && text.includes('redirect to login page')
+}
+
+function browserDisplayName(browser) {
+    const normalized = String(browser || '').toLowerCase()
+    if (normalized === 'chrome') return 'Google Chrome'
+    if (normalized === 'edge') return 'Microsoft Edge'
+    if (normalized === 'firefox') return 'Mozilla Firefox'
+    return normalized || 'navegador selecionado'
+}
+
+function buildCookieDecryptMessage(browser, stderrText) {
+    const original = String(stderrText || '').trim()
+    return [
+        `Falha ao ler cookies do ${browserDisplayName(browser)} no Windows (DPAPI).`,
+        'No Chrome/Edge isso pode ocorrer por proteção de cookies do próprio navegador.',
+        'Tente usar outro navegador logado (ex.: Firefox) ou perfil diferente.',
+        original
+    ].filter(Boolean).join('\n')
+}
+
+async function listWindowsBrowserProfiles(browser) {
+    if (process.platform !== 'win32') return []
+    const normalized = String(browser || '').toLowerCase()
+    let profilesDir = ''
+
+    if (normalized === 'chrome') {
+        const localAppData = process.env.LOCALAPPDATA || ''
+        if (!localAppData) return []
+        profilesDir = path.join(localAppData, 'Google', 'Chrome', 'User Data')
+    } else if (normalized === 'edge') {
+        const localAppData = process.env.LOCALAPPDATA || ''
+        if (!localAppData) return []
+        profilesDir = path.join(localAppData, 'Microsoft', 'Edge', 'User Data')
+    } else if (normalized === 'firefox') {
+        const appData = process.env.APPDATA || ''
+        if (!appData) return []
+        profilesDir = path.join(appData, 'Mozilla', 'Firefox', 'Profiles')
+    } else {
+        return []
+    }
+
+    try {
+        const entries = await fs.readdir(profilesDir, { withFileTypes: true })
+        const names = entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name)
+        if (normalized === 'firefox') return names
+        return names.filter((name) => name === 'Default' || /^Profile \d+$/.test(name))
+    } catch {
+        return []
+    }
+}
+
+async function buildBrowserCookieCandidates(browser) {
+    const normalized = String(browser || '').trim()
+    if (!normalized) return ['']
+
+    const candidates = [normalized]
+    if (process.platform !== 'win32') return candidates
+
+    if (normalized === 'chrome' || normalized === 'edge') {
+        candidates.push(`${normalized}:Default`)
+    }
+
+    const profiles = await listWindowsBrowserProfiles(normalized)
+    for (const profileName of profiles) {
+        candidates.push(`${normalized}:${profileName}`)
+    }
+
+    return Array.from(new Set(candidates))
+}
+
 async function probeMedia(url, browser, options = {}) {
     const ytDlpPath = await getYtDlpPath()
     if (!ytDlpPath) {
@@ -448,10 +521,10 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         }
     }
 
-    const buildGalleryArgs = (useBrowserCookies) => {
+    const buildGalleryArgs = (browserCookieSource) => {
         const args = []
-        if (useBrowserCookies && browser) {
-            args.push('--cookies-from-browser', browser)
+        if (browserCookieSource) {
+            args.push('--cookies-from-browser', browserCookieSource)
         }
         args.push('--no-input')
         args.push('--no-skip')
@@ -463,9 +536,42 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         return args
     }
 
-    let result = await runCommand(galleryDlPath, buildGalleryArgs(true), { timeoutMs: perItemTimeoutMs, onProcess })
-    if (!result.ok && browser && isCookieDecryptError(result.stderr)) {
-        result = await runCommand(galleryDlPath, buildGalleryArgs(false), { timeoutMs: perItemTimeoutMs, onProcess })
+    const cookieCandidates = await buildBrowserCookieCandidates(browser)
+    const cookieAttempts = []
+    let result = null
+
+    for (const cookieSource of cookieCandidates) {
+        const attempt = await runCommand(galleryDlPath, buildGalleryArgs(cookieSource), { timeoutMs: perItemTimeoutMs, onProcess })
+        cookieAttempts.push({ cookieSource, attempt })
+        if (attempt.ok) {
+            result = attempt
+            break
+        }
+    }
+
+    if (!result && browser) {
+        const noCookieAttempt = await runCommand(galleryDlPath, buildGalleryArgs(''), { timeoutMs: perItemTimeoutMs, onProcess })
+        if (noCookieAttempt.ok) {
+            result = noCookieAttempt
+        } else {
+            const decryptFailure = cookieAttempts.find((entry) => isCookieDecryptError(entry.attempt.stderr))
+            const loginFailure = cookieAttempts.find((entry) => isInstagramLoginRedirect(entry.attempt.stderr))
+
+            if (decryptFailure && (isInstagramLoginRedirect(noCookieAttempt.stderr) || isCookieDecryptError(noCookieAttempt.stderr))) {
+                result = {
+                    ...decryptFailure.attempt,
+                    stderr: buildCookieDecryptMessage(browser, decryptFailure.attempt.stderr)
+                }
+            } else if (loginFailure) {
+                result = loginFailure.attempt
+            } else {
+                result = noCookieAttempt
+            }
+        }
+    }
+
+    if (!result) {
+        result = cookieAttempts[cookieAttempts.length - 1]?.attempt || await runCommand(galleryDlPath, buildGalleryArgs(''), { timeoutMs: perItemTimeoutMs, onProcess })
     }
 
     return {
