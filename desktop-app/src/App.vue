@@ -28,6 +28,7 @@ interface TotalsState {
 
 const inputText = ref('')
 const selectedBrowser = ref<'chrome' | 'edge' | 'firefox'>('chrome')
+const downloadBrowserUsed = ref<'' | 'chrome' | 'edge' | 'firefox'>('')
 const saveMode = ref<'perfil' | 'misturado'>('perfil')
 const openFolderOnFinish = ref(true)
 const downloadFolderPath = ref('')
@@ -187,6 +188,13 @@ const mediaLabel = (mediaType: MediaType) => {
   if (mediaType === 'video') return 'Vídeo'
   if (mediaType === 'mixed') return 'Misto'
   return 'Não identificado'
+}
+
+const browserLabel = (browser: '' | 'chrome' | 'edge' | 'firefox') => {
+  if (browser === 'chrome') return 'Google Chrome'
+  if (browser === 'edge') return 'Microsoft Edge'
+  if (browser === 'firefox') return 'Mozilla Firefox'
+  return 'Não definido'
 }
 
 const mediaTotals = computed(() => {
@@ -463,6 +471,7 @@ const startDownload = async () => {
   const targets = selectedLinks.value
   if (targets.length === 0) return
 
+  downloadBrowserUsed.value = selectedBrowser.value
   downloadActionStatus.value = 'Iniciando...'
   cancellingDownload.value = false
   if (isElectron()) {
@@ -600,6 +609,7 @@ const retryFailed = async () => {
   cancellingDownload.value = false
   isDownloading.value = true
   downloadProgress.value = 0
+  downloadBrowserUsed.value = selectedBrowser.value
 
   downloadIndexByUrl = new Map<string, number>()
   for (const [index, entry] of downloadStatuses.value.entries()) {
@@ -660,6 +670,7 @@ const reset = () => {
   isDownloading.value = false
   downloadActionStatus.value = ''
   cancellingDownload.value = false
+  downloadBrowserUsed.value = ''
   activeBatchId.value = ''
   currentStep.value = 1
 }
@@ -1040,6 +1051,9 @@ onBeforeUnmount(() => {
             <div class="flex justify-between items-end mb-1">
               <span class="text-sm font-medium text-slate-300">Baixando arquivos...</span>
               <span class="text-sm font-bold text-pink-400">{{ Math.round(downloadProgress) }}%</span>
+            </div>
+            <div class="text-xs text-slate-400">
+              Cookies selecionados: <span class="text-slate-200">{{ browserLabel(downloadBrowserUsed || selectedBrowser) }}</span>
             </div>
             <div class="w-full bg-slate-800 rounded-full h-3">
               <div class="bg-gradient-to-r from-pink-500 to-orange-400 h-3 rounded-full transition-all duration-300" :style="{ width: downloadProgress + '%' }"></div>

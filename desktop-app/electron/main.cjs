@@ -321,6 +321,15 @@ function fallbackMediaType(url, platform) {
     return 'unknown'
 }
 
+function isCookieDecryptError(stderrText) {
+    const text = String(stderrText || '').toLowerCase()
+    return (
+        text.includes('failed to decrypt cookie') ||
+        text.includes('dpapi') ||
+        (text.includes('cookies') && text.includes('nonetype'))
+    )
+}
+
 async function probeMedia(url, browser, options = {}) {
     const ytDlpPath = await getYtDlpPath()
     if (!ytDlpPath) {
@@ -439,19 +448,26 @@ async function downloadMedia({ url, browser, saveMode, timeoutMs, onProcess }) {
         }
     }
 
-    const args = []
-    if (browser) {
-        args.push('--cookies-from-browser', browser)
-    }
-    args.push('--no-input')
-    args.push('--no-skip')
-    if (saveMode === 'misturado') {
-        args.push('-D', path.join(outputDir, 'misturado'), normalizedUrl)
-    } else {
-        args.push('-d', outputDir, normalizedUrl)
+    const buildGalleryArgs = (useBrowserCookies) => {
+        const args = []
+        if (useBrowserCookies && browser) {
+            args.push('--cookies-from-browser', browser)
+        }
+        args.push('--no-input')
+        args.push('--no-skip')
+        if (saveMode === 'misturado') {
+            args.push('-D', path.join(outputDir, 'misturado'), normalizedUrl)
+        } else {
+            args.push('-d', outputDir, normalizedUrl)
+        }
+        return args
     }
 
-    const result = await runCommand(galleryDlPath, args, { timeoutMs: perItemTimeoutMs, onProcess })
+    let result = await runCommand(galleryDlPath, buildGalleryArgs(true), { timeoutMs: perItemTimeoutMs, onProcess })
+    if (!result.ok && browser && isCookieDecryptError(result.stderr)) {
+        result = await runCommand(galleryDlPath, buildGalleryArgs(false), { timeoutMs: perItemTimeoutMs, onProcess })
+    }
+
     return {
         success: result.ok,
         url: normalizedUrl,
